@@ -4,10 +4,8 @@
 #   simple_functions
 #-------------------------------------------------------------------------------
 
-# irnt: quantile-normalize a variable
-irnt <- function(x){
-  qnorm( ( rank( x, na.last="keep" ) -0.5 ) / sum( !is.na(x) ) )
-}
+# logit10: Convert a probability to a log (base 10) odds ratio
+logit10 <- function(p) log10( p / (1-p) )
 
 # p_to_z: Convert a P value into a z-score
 p_to_z <- function( p, direction=NULL, limit=.Machine$double.xmin, log.p=FALSE ){
@@ -56,7 +54,7 @@ library(dplyr)
 
 # Read in causal/non-causal trait-gene pairs
 cnc_file <- file.path( maindir, "causal_noncausal_trait_gene_pairs", 
-                       "causal_noncausal_trait_gene_pairs_300kb_pubmed.tsv" )
+                       "causal_noncausal_trait_gene_pairs_300kb.tsv" )
 cnc <- fread(cnc_file)
 
 # Read in V2G
@@ -64,7 +62,8 @@ vg_file1 <- file.path( maindir, "UKB_AllMethods_GenePrioritization.txt.gz" )
 vg1 <- fread(vg_file1)
 vg1 <- vg1[ order( vg1$trait, vg1$region, vg1$cs_id, vg1$ensgid ) , ]
 
-# Read in extended V2G
+# Read in extended V2G (MAGMA and SMR)
+# One row per credible set variant. We extract gene-level results for the top variant.
 vg_file2 <- file.path( maindir, "PoPS_UKBB_noncoding_validation_1348CSs_v2.txt.gz" )
 vg2 <- fread(vg_file2)
 vg2 <- vg2[ order( vg2$trait, vg2$region, vg2$cs_id, vg2$ensgid, -vg2$pip ) , ]
@@ -73,57 +72,35 @@ vg2 <- vg2[ !idx , ]
 gcols_vg2 <- c( "trait", "region", "cs_id", "ensgid", "smr_p", "smr_rank", 
                  "magma_score", "magma_rank" )
 
-# Read in promoter SNP V2G
-vg_file3 <- file.path( maindir, "promoter_v2g.tsv" )
-vg3 <- fread(vg_file3)
-
-# Read in rare variant burden test V2G
-vg_file4 <- file.path( maindir, "rare_variant_burden.tsv" )
-vg4 <- fread(vg_file4)
-names(vg4) <- tolower( names(vg4) )
-idx <- duplicated( vg4[ , c( "trait", "gene" ) ] )
-table(idx)
-vg4 <- vg4[ !idx , ]
-gcols_vg4 <- c( "trait", "gene", "burden_ms", "burden_plof", 
-                 "skato_ms", "skato_plof" )
-
 # Read in DEPICT and NetWAS V2G
-vg_file5 <- file.path( maindir, "netwas_depict.txt.gz" )
-vg5 <- fread(vg_file5)
-vg5 <- vg5[ !grepl( pattern="^PASS_", x=vg5$trait ) , ]
-names(vg5)[ names(vg5) == "ENSGID" ] <- "ensgid"
-vg5$trait <- sub( pattern="^UKB_", replacement="", x=vg5$trait )
-vg5
+vg_file3 <- file.path( maindir, "netwas_depict.txt.gz" )
+vg3 <- fread(vg_file3)
+vg3 <- vg3[ !grepl( pattern="^PASS_", x=vg3$trait ) , ]
+names(vg3)[ names(vg3) == "ENSGID" ] <- "ensgid"
+vg3$trait <- sub( pattern="^UKB_", replacement="", x=vg3$trait )
 
 # Merge
 j1 <- left_join( x=vg1, y=vg2[,..gcols_vg2] )
 j2 <- left_join( x=j1, y=vg3 )
-j3 <- left_join( x=j2, y=vg4[,..gcols_vg4] )
-j4 <- left_join( x=j3, y=vg5 )
 
 # Remove genes >300kb from the lead variant
-j5 <- j4[ j4$distance_genebody < 300e3 , ]
-NROW(vg1); NROW(vg2); NROW(vg3); NROW(vg4); NROW(vg5) 
-NROW(j1); NROW(j5) 
+j3 <- j2[ j2$distance_genebody < 300e3 , ]
+NROW(vg1); NROW(vg2); NROW(vg3)
+NROW(j1); NROW(j3) 
 
-# Subset both to shared trait-ENSGID-CS triplets
+# Subset both to shared trait-ENSGID-CS triplets (TECs)
 # Note: yields about half as many missed causal/non-causal TGPs than using gene
 # Note: that match() will only select the first instance for the small...
 # ...number of cases where there are multiple ENSGIDs per gene
 tec_cnc <- paste( cnc$trait,  cnc$ensgid,  cnc$cs_id,  sep="_" )
-tec_vg <- paste( j5$trait, j5$ensgid, j5$cs_id, sep="_" )
+tec_vg <- paste( j3$trait, j3$ensgid, j3$cs_id, sep="_" )
 tec_shared <- intersect( tec_cnc, tec_vg )
 cnc2 <- cnc[  match( tec_shared, tec_cnc ) , ]
-j6 <- j5[ match( tec_shared, tec_vg ) , ]
+j4 <- j3[ match( tec_shared, tec_vg ) , ]
 
 # Explore: What percentage of triplets were shared?
-length(tec_shared) /  length(tec_cnc)
-length(tec_shared) /  length(tec_vg)
-
-# Explore: Do the datasets have the same starts, and ends?
-# About half of the time they differ (different references?)
-table( cnc2$gene_start  == j6$start )
-table( cnc2$gene_end    == j6$end )
+length(tec_shared) /  length(tec_cnc) #93% are found in the causal gene dataset
+length(tec_shared) /  length(tec_vg)  #8% are found in the V2G dataset
 
 # Merge the two datasets
 gcols_vg <- c( "trait", "gene", "ensgid", "region", "cs_id", "chromosome",
@@ -136,107 +113,16 @@ gcols_vg <- c( "trait", "gene", "ensgid", "region", "cs_id", "chromosome",
                "coding_prob", "coding_rank", "distance_tss", 
                "distance_tss_rank", "distance_genebody", 
                "distance_genebody_rank", "smr_p", "smr_rank", 
-               "magma_score", "magma_rank", "promoter_pip", 
-               "burden_ms", "burden_plof", "skato_ms", "skato_plof",
+               "magma_score", "magma_rank", 
                "full_loco_netwas_score", "full_loco_netwas_bon_score",
                "no_loco_nc_netwas_score", "no_loco_nc_netwas_bon_score", 
                "no_loco_nc_depict_p", "full_loco_depict_p" )
-gcols_cnc <- c( "pubmed", "pubmed_trait", "pubmed_gene",
-                "n_cs_in_region", "n_cs_snps", "cs_width", "ngenes_nearby" )
-m <- cbind( causal=cnc2$causal, j6[ , ..gcols_vg ], cnc2[ , ..gcols_cnc ] )
-
-# Explore: Loop through TCPs and check whether locus-based ranks are still good
-rank_cols <- grep( pattern="rank$", x=names(m), value=TRUE )
-tcp_m <- paste( m$trait, m$region, m$cs_id, sep="_" )
-mat <- matrix( nrow = length( unique(tcp_m) ),
-               ncol = length(rank_cols) )
-for( i in seq_along( unique(tcp_m) ) ){
-  sub <- m[ tcp_m == tcp_m[i] , ..rank_cols ]
-  for( j in seq_along(rank_cols) ){
-    sub2 <- na.omit( sub[[j]] )
-    mat[i,j] <- all( sort(sub2) == seq_along(sub2) )
-  }
-}
-table(mat)
+gcols_cnc <- c( "n_cs_in_region", "n_cs_snps", "cs_width", "ngenes_nearby" )
+m <- cbind( causal=cnc2$causal, j4[ , ..gcols_vg ], cnc2[ , ..gcols_cnc ] )
 
 # Add a column for the number of genes in the locus
-logit10 <- function(p) log10( p / (1-p) )
 m$prior_n_genes_locus <- logit10( 1/m$ngenes_nearby )
-
-
-#-------------------------------------------------------------------------------
-#   PIP in gene, PIP-weighted distance to TSS (Weibull) converted to P(causal)
-#-------------------------------------------------------------------------------
-
-# # Read in eQTLGen TSS distances, extract density
-# dte <- fread( file.path("~/projects/causal_genes/fauman_and_hyde_2022_supp_files/",
-#                         "fauman_and_hyde_2022_supp_file3.txt") )
-# fit.w  <- fitdist( data=dte2$dist, distr="weibull" )
-
-# Read in CS column names
-# Read in CSs, add column names
-cs_colnames <- fread( file.path( maindir, "release1.1", "UKBB_94traits_release1.cols" ),
-                      header=FALSE )
-cs <- fread( file.path( maindir, "release1.1", "UKBB_94traits_release1.bed.gz" ) )
-names(cs) <- cs_colnames$V1
-
-# Remove SNPs that are not in CSs
-# Subset to SUSIE CSs only
-# Add P value and TCP columns
-cs2 <- cs[  cs$cs_id > 0 , ]
-cs3 <- cs2[ cs2$method == "SUSIE" , ]
-cs3$p <- z_to_p( z=sqrt(cs3$chisq_marginal) )
-cs3$tcp <- paste( cs3$trait, cs3$region, cs3$cs_id, sep="_" )
-head( cs3, 1 )
-
-# For each TGP
-# m$dist_tss_wei <- as.numeric(NA)
-m$dist_gene_pip <- as.numeric(NA)
-for( i in unique(tcp_m) ){
-
-  # Subset to the correct CS
-  cs4 <- cs3[ cs3$tcp == i , c( "rsid", "end", "pip" ) ]
-
-  # Subset to the genes in the correct locus
-  loc <- m[ tcp_m == i , c( "gene", "start", "end", "tss" ) ]
-
-  # # Compute the distance to the TSS of all genes in the locus
-  # d <- outer( X=loc$tss, Y=cs4$end, FUN=function(i,j) abs(i-j)  )
-  # dimnames(d)[[1]] <- loc$gene
-  # dimnames(d)[[2]] <- cs4$rsid
-  # 
-  # # Replace distance with the Weibull density fitted to eQTLGen data
-  # # d2 <- dweibull( x=log10(d), shape=7.375, scale=4.7 )
-  # d2 <- dweibull( x=d, shape=fit.w$estimate["shape"],
-  #                 scale=fit.w$estimate["scale"] )
-  # d2[ d2 > 2.5e-5 ] <- 2.5e-5
-  # 
-  # # Multiply Weibull densities by PIP and sum (matrix multiplication)
-  # d3 <- d2 %*% cs4$pip
-  # 
-  # # Set
-  # set( x     = m,
-  #      i     = which( tcp_m == i ),
-  #      j     = "dist_tss_wei",
-  #      value = d3[,1] )
-
-  # Is each SNP inside the boundaries of each gene?
-  ge <- outer( X=loc$start, Y=cs4$end, FUN=function(i,j) ifelse( j >= i, 1, 0 )  )
-  le <- outer( X=loc$end,   Y=cs4$end, FUN=function(i,j) ifelse( j <= i, 1, 0 )  )
-  dimnames(ge)[[1]] <- dimnames(le)[[1]] <- loc$gene
-  dimnames(ge)[[2]] <- dimnames(le)[[2]] <- cs4$rsid
-  b <- ge*le
-
-  # Multiply Weibull densities by PIP and sum (matrix multiplication)
-  b2 <- b %*% cs4$pip
-
-  # Set
-  set( x     = m,
-       i     = which( tcp_m == i ),
-       j     = "dist_gene_pip",
-       value = b2[,1] )
-}
-m$whole_cs_in_gene <- m$dist_gene_pip >= 0.95
+tcp_m <- paste( m$trait, m$region, m$cs_id, sep="_" )
 
 
 #-------------------------------------------------------------------------------
@@ -253,7 +139,6 @@ m$dist_gene_glo     <- log10( m$distance_genebody + 1e3 )
 # Distance to TSS
 m$dist_tss_raw_l2g  <- log( m$distance_tss + 1 )
 m$dist_tss_glo      <- log10( m$distance_tss + 1e3 )
-# m$dist_tss_wei      <- dweibull( x=log10(m$distance_tss), shape=7.375, scale=4.7 )
 
 # TWAS
 m$twas_p <- ifelse( m$twas_p == 0, .Machine$double.xmin, m$twas_p )
@@ -297,15 +182,6 @@ m$coding_glo <- ifelse( is.na(m$coding_prob) | logit10(m$coding_prob) < log10(10
                         logit10(m$coding_prob) )
 m$coding     <- ifelse( is.na(m$coding_prob), 0, 1 )
 
-# Promoter
-m$promoter_glo <- logit10(m$promoter_pip)
-m$promoter_glo[ is.na(m$promoter_glo) ] <- -3
-m$promoter_glo[ m$promoter_glo > 0 ] <- 0
-
-# PubMed
-m$pubmed_glo <- ifelse( m$pubmed == 0, -1, log10(m$pubmed) )
-m$pubmed0    <- m$pubmed == 0
-
 # DEPICT
 m$depict_z_glo <- p_to_z(m$no_loco_nc_depict_p)
 m$depict_z_glo[ is.na(m$depict_z_glo) ] <- 0
@@ -315,95 +191,6 @@ m$netwas_score_glo     <- m$no_loco_nc_netwas_score
 m$netwas_bon_score_glo <- m$no_loco_nc_netwas_bon_score
 m$netwas_score_glo[     is.na(m$netwas_score_glo) ]     <- 0
 m$netwas_bon_score_glo[ is.na(m$netwas_bon_score_glo) ] <- 0
-
-
-#-------------------------------------------------------------------------------
-#   Add columns for IRNT features
-#-------------------------------------------------------------------------------
-
-m$pops_int           <- as.numeric(NA)
-m$dist_gene_int      <- as.numeric(NA)
-m$dist_tss_int       <- as.numeric(NA)
-m$twas_int           <- as.numeric(NA)
-m$magma_int          <- as.numeric(NA)
-m$smr_int            <- as.numeric(NA)
-m$corr_liu_int       <- as.numeric(NA)
-m$coding_int         <- as.numeric(NA)
-for( i in unique(m$trait) ){
-
-  # Subset
-  sub <- m[ m$trait == i , ]
-
-  # Compute L2G-like values
-  pops_vals   <- irnt(sub$pops_glo)
-  gene_vals   <- irnt(sub$dist_gene_glo)
-  tss_vals    <- irnt(sub$dist_tss_glo)
-  twas_vals   <- irnt(sub$twas_glo)
-  magma_vals  <- irnt(sub$magma_glo)
-  smr_vals    <- irnt(sub$smr_glo)
-  liu_vals    <- irnt(sub$corr_liu_glo)
-  coding_vals <- irnt(sub$coding_glo)
-
-  # Replace: POPS
-  set( x     = m,
-       i     = which( m$trait == i ),
-       j     = "pops_int",
-       value = pops_vals )
-
-  # Replace: gene body
-  set( x     = m,
-       i     = which( m$trait == i ),
-       j     = "dist_gene_int",
-       value = gene_vals )
-
-  # Replace: TSS
-  set( x     = m,
-       i     = which( m$trait == i ),
-       j     = "dist_tss_int",
-       value = tss_vals )
-
-  # Replace: TWAS
-  set( x     = m,
-       i     = which( m$trait == i ),
-       j     = "twas_int",
-       value = twas_vals )
-
-  # Replace: MAGMA
-  set( x     = m,
-       i     = which( m$trait == i ),
-       j     = "magma_int",
-       value = magma_vals )
-
-  # Replace: SMR
-  set( x     = m,
-       i     = which( m$trait == i ),
-       j     = "smr_int",
-       value = smr_vals )
-
-  # Replace: E-P Liu
-  set( x     = m,
-       i     = which( m$trait == i ),
-       j     = "corr_liu_int",
-       value = liu_vals )
-
-  # Replace: coding
-  set( x     = m,
-       i     = which( m$trait == i ),
-       j     = "coding_int",
-       value = coding_vals )
-}
-
-# Look at the first 5 traits
-plot(  density( m$pops_int[ m$trait == unique(m$trait)[1] ] ) )
-lines( density( m$pops_int[ m$trait == unique(m$trait)[2] ] ) )
-lines( density( m$pops_int[ m$trait == unique(m$trait)[3] ] ) )
-lines( density( m$pops_int[ m$trait == unique(m$trait)[4] ] ) )
-lines( density( m$pops_int[ m$trait == unique(m$trait)[5] ] ) )
-lines( density( m$pops_glo[ m$trait == unique(m$trait)[1] ] ), col="steelblue" )
-lines( density( m$pops_glo[ m$trait == unique(m$trait)[2] ] ), col="steelblue" )
-lines( density( m$pops_glo[ m$trait == unique(m$trait)[3] ] ), col="steelblue" )
-lines( density( m$pops_glo[ m$trait == unique(m$trait)[4] ] ), col="steelblue" )
-lines( density( m$pops_glo[ m$trait == unique(m$trait)[5] ] ), col="steelblue" )
 
 
 #-------------------------------------------------------------------------------
@@ -424,11 +211,10 @@ m$abc_rel                 <- as.numeric(NA)
 m$magma_rel               <- as.numeric(NA)
 m$smr_rel                 <- as.numeric(NA)
 m$coding_rel              <- as.numeric(NA)
-m$promoter_rel            <- as.numeric(NA)
-m$pubmed_rel              <- as.numeric(NA)
 m$depict_z_rel            <- as.numeric(NA)
 m$netwas_score_rel        <- as.numeric(NA)
 m$netwas_bon_score_rel    <- as.numeric(NA)
+tcp_m <- paste( m$trait, m$region, m$cs_id, sep="_" )
 for( i in unique(tcp_m) ){
   
   # Subset
@@ -449,8 +235,6 @@ for( i in unique(tcp_m) ){
   magma_vals    <- sub$magma_glo            - max(sub$magma_glo)
   smr_vals      <- sub$smr_glo              - max(sub$smr_glo)
   coding_vals   <- sub$coding_glo           - max(sub$coding_glo)
-  promoter_vals <- sub$promoter_glo         - max(sub$promoter_glo)
-  pubmed_vals   <- sub$pubmed_glo           - max(sub$pubmed_glo)
   depict_vals   <- sub$depict_z_glo         - max(sub$depict_z_glo)
   netwas_vals   <- sub$netwas_score_glo     - max(sub$netwas_score_glo)
   netwas_b_vals <- sub$netwas_bon_score_glo - max(sub$netwas_bon_score_glo)
@@ -461,25 +245,25 @@ for( i in unique(tcp_m) ){
        j     = "pops_rel", 
        value = pops_vals )
   
-  # Replace: gene body linear
+  # Replace: gene body
   set( x     = m, 
        i     = which( tcp_m == i ), 
        j     = "dist_gene_rel", 
        value = gene_vals )
   
-  # Replace: TSS linear
+  # Replace: TSS
   set( x     = m, 
        i     = which( tcp_m == i ), 
        j     = "dist_tss_rel", 
        value = tss_vals )
   
-  # Replace: TWAS linear
+  # Replace: TWAS
   set( x     = m, 
        i     = which( tcp_m == i ), 
        j     = "twas_rel", 
        value = twas_vals )
   
-  # Replace: E-P Liu linear
+  # Replace: E-P Liu
   set( x     = m, 
        i     = which( tcp_m == i ), 
        j     = "corr_liu_rel", 
@@ -509,13 +293,13 @@ for( i in unique(tcp_m) ){
        j     = "pchic_jav_rel", 
        value = jav_vals )
   
-  # Replace: CLPP linear
+  # Replace: CLPP
   set( x     = m, 
        i     = which( tcp_m == i ), 
        j     = "clpp_rel", 
        value = clpp_vals )
   
-  # Replace: ABC linear
+  # Replace: ABC
   set( x     = m, 
        i     = which( tcp_m == i ), 
        j     = "abc_rel", 
@@ -539,18 +323,6 @@ for( i in unique(tcp_m) ){
        j     = "coding_rel", 
        value = coding_vals )
   
-  # Replace: promoter
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "promoter_rel", 
-       value = promoter_vals )
-  
-  # Replace: PubMed
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "pubmed_rel", 
-       value = pubmed_vals )
-  
   # Replace: DEPICT
   set( x     = m, 
        i     = which( tcp_m == i ), 
@@ -571,13 +343,11 @@ for( i in unique(tcp_m) ){
 }
 
 # Add BIL
-m$promoter_bil         <- m$promoter_rel         == 0
-m$pubmed_bil           <- m$pubmed_rel           == 0
 m$depict_z_bil         <- m$depict_z_rel         == 0
 m$netwas_score_bil     <- m$netwas_score_rel     == 0
 m$netwas_bon_score_bil <- m$netwas_bon_score_rel == 0
 
-# Look at the first CS
+# Look at the first TCP
 m[ tcp_m == unique(tcp_m)[1] , ]
 
 
@@ -599,6 +369,7 @@ set( x = m,
      value = NA )
 
 # Create new columns for whether a given TGP has best-in-locus support from a given method
+rank_cols <- grep( pattern="rank$", x=names(m), value=TRUE )
 bil_colnames <- sub( pattern="_rank$", replacement="_bil", x=rank_cols )
 bil_colnames <- sub( pattern="javierre", replacement="jav", x=bil_colnames )
 bil_colnames <- sub( pattern="andersson", replacement="and", x=bil_colnames )
@@ -609,7 +380,7 @@ empty_bil <- as.data.table( matrix( nrow=NROW(m), ncol=length(bil_colnames) ) )
 names(empty_bil) <- bil_colnames
 m2 <- cbind( m, empty_bil )
 
-# For each vg method,
+# For each V2G method,
 # Assign rank 1 TGP as having V2G support and all other TGPs as not
 for( j in seq_along(bil_colnames) ){
   
@@ -667,7 +438,6 @@ set( x     = m3,
 king <- fread( file.path( maindir, "king_2019_gene_covariates.tsv" ) )
 
 # Merge
-# king_cols <- names(king)
 king_cols <- c( "ensgid", "rvis" )
 m4 <- left_join( x=m3, y=king[,..king_cols] )
 m4$rvis_miss <- ifelse( is.na(m4$rvis), 1, 0 )
@@ -676,62 +446,8 @@ set( x     = m4,
      j     = "rvis", 
      # value = -0.603598 )
      value = median( m4$rvis, na.rm=TRUE ) )
-m4$rvis7 <- ifelse( abs(m4$rvis) > 7, 7*sign(m4$rvis), m4$rvis )
 m4$rvis4 <- ifelse( abs(m4$rvis) > 4, 4*sign(m4$rvis), m4$rvis )
 m4$rvis4_poly2 <- m4$rvis4^2
-
-
-#-------------------------------------------------------------------------------
-#   Add pLI
-#-------------------------------------------------------------------------------
-
-# Read in the data
-psyops_file <- "~/repos/PsyOPS/constraint_scores.tsv"
-po <- fread(psyops_file)
-names(po) <- c( "gene", "pLI", "oe", "loeuf", "cds_length", 
-                "chrom", "start", "end" )
-
-# Merge
-po_cols <- c( "gene", "pLI" )
-po2 <- po[ order(-po$pLI) , ..po_cols ]
-po3 <- po2[ !duplicated(po2$gene) , ]
-m5 <- left_join( x=m4, y=po3, by="gene" )
-m5$pLI0.99 <- m5$pLI > 0.99 & !is.na(m5$pLI)
-
-
-#-------------------------------------------------------------------------------
-#   Add burden results and covariate
-#-------------------------------------------------------------------------------
-
-m5$burden <- ifelse( m5$burden_plof < 0.05/2e5 & !is.na(m5$burden_plof), TRUE, FALSE )
-burden_prop  <- tapply( m5$burden, m5$trait, mean )
-burden_prop2 <- data.frame( trait=names(burden_prop), burden_prop=burden_prop )
-m6           <- left_join( x=m5, y=burden_prop2, by="trait" )
-
-
-#-------------------------------------------------------------------------------
-#   Add PubMed evidence and covariates
-#-------------------------------------------------------------------------------
-
-# Add a binary feature for having any PubMed hits
-# Add a continuous feature for log10(PubMed hits) with NAs converted to 0's
-# (to preserve the meaning of the intercept)
-m6$pubmed_any <- m6$pubmed > 0
-m6$pubmed_log <- ifelse( m6$pubmed_any, log10(m6$pubmed), 0 )
-
-# Add a trait-level covariate for the proportion of genes with PubMed evidence
-pm_trait_prop  <- tapply( m6$pubmed_any, m6$trait, mean )
-pm_trait_prop2 <- data.frame( trait             = names(pm_trait_prop), 
-                              pubmed_trait_prop = pm_trait_prop )
-m7             <- left_join( x=m6, y=pm_trait_prop2, by="trait" )
-
-# Add a trait-level covariate for the mean log10(PubMed hits)
-pm_log_mean  <- tapply( m7$pubmed_log[m7$pubmed_any], 
-                         m7$trait[m7$pubmed_any], mean )
-pm_log_mean2 <- data.frame( trait           = names(pm_log_mean), 
-                            pubmed_log_mean = pm_log_mean )
-m8           <- left_join( x=m7, y=pm_log_mean2, by="trait" )
-m8$pubmed_log_mean[ is.na(m8$pubmed_log_mean) ] <- 0
 
 
 #-------------------------------------------------------------------------------
@@ -741,7 +457,7 @@ m8$pubmed_log_mean[ is.na(m8$pubmed_log_mean) ] <- 0
 # Write
 merged_outfile <- file.path( maindir, "causal_noncausal_trait_gene_pairs", 
                              "causal_tgp_and_gene_mapping_data_300kb.tsv" )
-fwrite( x=m8, file=merged_outfile, sep="\t" )
+fwrite( x=m4, file=merged_outfile, sep="\t" )
 
 
 #-------------------------------------------------------------------------------

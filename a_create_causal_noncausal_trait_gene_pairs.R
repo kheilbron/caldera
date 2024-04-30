@@ -116,33 +116,6 @@ head(tcp_n_near)
 
 
 #-------------------------------------------------------------------------------
-#   Get the total PIP of promoter SNPs
-#-------------------------------------------------------------------------------
-
-# Read in promoter SNPs
-hhp <- fread("~/projects/causal_genes/high_h2_promoter_SNPs.tsv", na.strings="" )
-bcols <- c( "SNP",  "ensgid", "gene" )
-gcols <- c( "rsid", "ensgid", "gene" )
-hhp2 <- hhp[ , ..bcols ]
-names(hhp2) <- gcols
-
-# Inner join non-coding CSs (near coding TGPs) with promoter data
-cs_n_near2 <- inner_join( x=cs_n_near, y=hhp2 )
-
-# Sum PIP across TCP-gene pairs
-sum_pip_p <- aggregate( x=cs_n_near2$pip, 
-                        by=list( trait  = cs_n_near2$trait, 
-                                 region = cs_n_near2$region, 
-                                 cs_id  = cs_n_near2$cs_id, 
-                                 ensgid = cs_n_near2$ensgid ), 
-                        FUN=sum )
-names(sum_pip_p)[ names(sum_pip_p)=="x" ] <- "promoter_pip"
-
-# Write to file
-fwrite( x=sum_pip_p, file=file.path( maindir, "promoter_v2g.tsv" ), sep="\t" )
-
-
-#-------------------------------------------------------------------------------
 #   Extract all genes near non-coding TCPs (near causal TGPs)
 #-------------------------------------------------------------------------------
 
