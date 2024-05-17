@@ -5,8 +5,8 @@
 #-------------------------------------------------------------------------------
 
 # Load libraries
-library(data.table)
-library(dplyr)
+suppressPackageStartupMessages( library(data.table) )
+suppressPackageStartupMessages( library(dplyr) )
 
 # Read in V2G
 maindir <- file.path( Sys.getenv("HOME"), "projects/causal_genes/" )
@@ -174,9 +174,94 @@ fwrite( x=cnc2, file=causal_gene_file, sep="\t" )
 
 
 #-------------------------------------------------------------------------------
-#   Done
+#   Write out coding genes, distal nearest genes, and distal NG+TP genes
 #-------------------------------------------------------------------------------
 
+# Non-coding TCPs that are far from fine-mapped (PIP > 50%) coding TCPs
+tcp_n_far <- setdiff( tcp_n, tcp_n_near$tcp )
+length(tcp_n); NROW(tcp_n_near); length(tcp_n_far)
+
+# All (coding and non-coding) fine-mapped TCPs
+tcp_a_fine <- unique( cs3$tcp[ cs3$pip > 0.5 ] )
+
+# Non-coding fine-mapped TCPs that are far from fine-mapped coding TCPs
+tcp_n_far_fine <- intersect( tcp_n_far, tcp_a_fine )
+# tcp_n_far_fine <- tcp_n_far
+length(tcp_n_far); length(tcp_a_fine); length(tcp_n_far_fine); length(tcp_c2)
+
+# Find the nearest gene to each distal non-coding fine-mapped TCP
+# If multiple genes are equal, take the one with the higher POPS score
+ng_n_far_fine0 <- v2g[ v2g$tcp %in% tcp_n_far_fine & 
+                       v2g$distance_genebody_rank == 1 , ]
+ng_n_far_fine0 <- ng_n_far_fine0[ order( ng_n_far_fine0$tcp, -ng_n_far_fine0$pops_score ) , ]
+ng_n_far_fine  <- ng_n_far_fine0[ !duplicated(ng_n_far_fine0$tcp) , ]
+NROW(ng_n_far_fine0); NROW(ng_n_far_fine)
+
+# Is there any overlap between these distal non-coding causal genes...
+# ...and the coding causal genes (for other traits)?
+length( unique(ng_n_far_fine$gene) )
+length( unique( cnc2$gene[ cnc2$causal ] ) )
+length( intersect( ng_n_far_fine$gene, cnc2$gene[cnc2$causal] ) )
+
+# Establish the set of unique high-PIP coding genes
+coding_genes0 <- cnc2[ cnc2$causal , c( "gene", "ensgid" ) ]
+coding_genes <- coding_genes0[ !duplicated(coding_genes0) , ]
+coding_genes <- coding_genes[ order(coding_genes$gene) , ]
+
+# Establish the set of non-causal genes in the same loci as causal genes
+noncausal_near_coding0 <- cnc2[ !cnc2$causal , c( "gene", "ensgid" ) ]
+noncausal_near_coding1 <- noncausal_near_coding0[ !duplicated(noncausal_near_coding0) , ]
+noncausal_near_coding  <- noncausal_near_coding1[ !( noncausal_near_coding1$ensgid %in% coding_genes$ensgid ) , ]
+
+# Remove coding genes from distal genes
+distal_nearest_genes0 <- ng_n_far_fine[ !( ng_n_far_fine$ensgid %in% coding_genes$ensgid ) , c( "gene", "ensgid" ) ]
+distal_nearest_genes  <- distal_nearest_genes0[ !duplicated(distal_nearest_genes0) , ]
+distal_nearest_genes <- distal_nearest_genes[ order(distal_nearest_genes$gene) , ]
+NROW(coding_genes); NROW(distal_nearest_genes)
+
+# Find noncausal genes near distal nearest genes
+noncausal_near_ng0 <- list()
+for( i in seq_along(distal_nearest_genes$ensgid) ){
+  chr   <- gencode$CHR[   gencode$ENSGID == distal_nearest_genes$ensgid[i] ]
+  start <- gencode$START[ gencode$ENSGID == distal_nearest_genes$ensgid[i] ]
+  end   <- gencode$END[   gencode$ENSGID == distal_nearest_genes$ensgid[i] ]
+  local <- gencode[ gencode$CHR == chr & 
+                      gencode$END > start - 3e5 & 
+                      gencode$START < end + 3e5 &
+                      gencode$ENSGID != distal_nearest_genes$ensgid[i], ]
+  noncausal_near_ng0[[i]] <- local[ , c( "NAME", "ENSGID" ) ]
+}
+noncausal_near_ng1 <- do.call( rbind, noncausal_near_ng0 )
+noncausal_near_ng <- noncausal_near_ng1[ !duplicated(noncausal_near_ng1) , ]
+names(noncausal_near_ng) <- c( "gene", "ensgid" )
+noncausal_near_ng <- noncausal_near_ng[ order(noncausal_near_ng$gene) , ]
+
+# Summary
+NROW(coding_genes); NROW(noncausal_near_coding)
+NROW(distal_nearest_genes); NROW(noncausal_near_ng)
+
+# Write to file
+coding_genes_file          <- file.path( maindir, 
+                                         "causal_noncausal_trait_gene_pairs",
+                                         "coding_genes.tsv" )
+noncausal_near_coding_file <- file.path( maindir, 
+                                         "causal_noncausal_trait_gene_pairs",
+                                         "noncausal_genes_near_coding.tsv" )
+distal_genes_file          <- file.path( maindir, 
+                                         "causal_noncausal_trait_gene_pairs",
+                                         "distal_genes.tsv" )
+noncausal_near_distal_file <- file.path( maindir, 
+                                         "causal_noncausal_trait_gene_pairs",
+                                         "noncausal_genes_near_distal.tsv" )
+fwrite( x=coding_genes,           sep="\t", file=coding_genes_file )
+fwrite( x=noncausal_near_coding,  sep="\t", file=noncausal_near_coding_file )
+fwrite( x=distal_ng_and_tp_genes, sep="\t", file=distal_genes_file )
+fwrite( x=noncausal_near_ng,    sep="\t", file=noncausal_near_distal_file )
+
+
+#-------------------------------------------------------------------------------
+#   Done
+#-------------------------------------------------------------------------------
 
 
 

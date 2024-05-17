@@ -268,6 +268,9 @@ auprc_test_set <- function( test_df, rand_mod=NULL, glm_mod=NULL, glmm_mod=NULL,
   if(avg_rvis){
     test_df$rvis4       <- mean(test_df$rvis4)
     test_df$rvis4_poly2 <- mean(test_df$rvis4_poly2)
+    test_df$rvis_gt_3   <- FALSE
+    test_df$rvis4_pos       <- 0
+    test_df$rvis4_pos_poly2 <- 0
   }
   
   # Fix protein attenuation covariates to their mean value in the test dataset
@@ -656,8 +659,8 @@ plot_logOR_relationship_smooth <- function( data, varname ){
     ggtitle(varname)
   p2 <- ggplot( loess.DF, aes( x=x, y=y) ) +
     geom_smooth( aes_auto(loess.DF), data=loess.DF, stat="identity", col="#70AD47" ) +
-    scale_y_continuous( trans="logit", 
-                        breaks=c( 0.01, 0.05, seq(0.1,0.9,0.1), 0.95, 0.99 ) ) + 
+    scale_y_continuous( trans="logit",
+                        breaks=c( 0.01, 0.05, seq(0.1,0.9,0.1), 0.95, 0.99 ) ) +
     geom_hline( yintercept=0.01 ) +
     geom_hline( yintercept=0.99 ) +
     theme_bw()
@@ -679,20 +682,23 @@ plot_logOR_relationship_smooth <- function( data, varname ){
 maindir <- "~/projects/causal_genes/"
 
 # Load libraries and sources
-library(data.table)
-library(corrplot)
-library(glmnet)
-library(tidyverse)
-library(ggrepel)
-library(lme4)
-library(RColorBrewer)
-library(PRROC)
-library(mlr)
-library(xgboost)
-library(parallel)
-library(parallelMap) 
-library(patchwork)
-library(viridis)
+suppressPackageStartupMessages( library(data.table) )
+suppressPackageStartupMessages( library(corrplot) )
+suppressPackageStartupMessages( library(glmnet) )
+suppressPackageStartupMessages( library(tidyverse) )
+suppressPackageStartupMessages( library(ggrepel) )
+suppressPackageStartupMessages( library(lme4) )
+suppressPackageStartupMessages( library(RColorBrewer) )
+suppressPackageStartupMessages( library(PRROC) )
+suppressPackageStartupMessages( library(mlr) )
+suppressPackageStartupMessages( library(xgboost) )
+suppressPackageStartupMessages( library(parallel) )
+suppressPackageStartupMessages( library(parallelMap) )
+suppressPackageStartupMessages( library(patchwork) )
+suppressPackageStartupMessages( library(viridis) )
+suppressPackageStartupMessages( library(tidymodels) )
+suppressPackageStartupMessages( library(tidyr) )
+suppressPackageStartupMessages( library(rpart.plot) )
 
 # Read in causal/non-causal TGPs annotated with gene mapping evidence
 cnc_map_file <- file.path( maindir, "causal_noncausal_trait_gene_pairs",
@@ -943,6 +949,163 @@ plot_logOR_relationship_smooth( data=tr, varname="netwas_bon_score_glo" )
 
 
 #-------------------------------------------------------------------------------
+#   Do I need a covariate in the model to account for the fact that different
+#   traits have different power for POPS?
+#-------------------------------------------------------------------------------
+
+# Subset to traits with >= 10 TCPs
+tr$tcp <- paste0( tr$trait, "_", tr$region, "_", tr$cs_id )
+n_tcp_per_trait <- tapply( X=tr$tcp, INDEX=tr$trait, 
+                           FUN=function(x) length( unique(x) ) )
+tr2 <- tr[ tr$trait %in% names(n_tcp_per_trait)[ n_tcp_per_trait >= 10 ] , ]
+tr2$pops_bil <- as.numeric(tr2$pops_bil)
+dim(tr2)
+
+# Look at correlation between mean, SD, skewness, and kurtosis across traits
+library(e1071)
+pl <- tapply( X=tr2$tcp,      INDEX=tr2$trait, FUN=function(x) length( unique(x) ) )
+pm <- tapply( X=tr2$pops_glo, INDEX=tr2$trait, FUN=mean )
+pv <- tapply( X=tr2$pops_glo, INDEX=tr2$trait, FUN=var )
+ps <- tapply( X=tr2$pops_glo, INDEX=tr2$trait, FUN=skewness )
+pk <- tapply( X=tr2$pops_glo, INDEX=tr2$trait, FUN=kurtosis )
+barplot( sort(pl), las=2, col=viridis( length(pm) ) )
+barplot( sort(pm), las=2, col=viridis( length(pm) ) )
+barplot( sort(pv), las=2, col=viridis( length(pm) ) )
+barplot( sort(ps), las=2, col=viridis( length(pm) ) )
+barplot( sort(pk), las=2, col=viridis( length(pm) ) )
+corrplot( cor( cbind( pc, pm, pv, ps, pk ) ) )
+
+# eCDF
+plot( ecdf(tr2$pops_glo), col="white", las=1 )
+for( i in names( sort(pl) ) ){
+  sub <- tr2[ tr2$trait == i , ]
+  plot( ecdf(sub$pops_glo), add=TRUE, 
+        col=viridis( n=length(pl) )[ which( names( sort(pl) ) == i)] )
+}
+
+# Make columns for the value
+tr2$n_tcp     <- pl[ match( tr2$trait, names(pl) ) ]
+tr2$pops_mean <- pm[ match( tr2$trait, names(pm) ) ]
+tr2$pops_var   <- pv[ match( tr2$trait, names(pv) ) ]
+tr2$pops_skew <- ps[ match( tr2$trait, names(ps) ) ]
+
+# Make models with just the trait-level covariate
+summary( glm( causal ~ n_tcp,     data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ pops_mean, data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ pops_var,  data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ pops_skew, data=tr2, family="binomial" ) )$coef
+
+# Make models with pops_glo + the trait-level covariate
+summary( glm( causal ~ pops_glo,             data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + n_tcp,     data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + pops_mean, data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + pops_var,   data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + pops_skew, data=tr2, family="binomial" ) )$coef
+
+# Add trait-level covariates to the basic model
+t_form <- update( s_form, . ~ . + n_tcp )
+t_form <- update( s_form, . ~ . + pops_mean )
+t_form <- update( s_form, . ~ . + pops_var )
+t_form <- update( s_form, . ~ . + pops_skew )
+t_glm  <- glm( t_form, data=tr2, family="binomial" )
+summary(t_glm)$coef
+glm_to_forest_p( mod=t_glm, suffix="" )
+
+# Add an interaction
+t_form <- update( s_form, . ~ . + pops_glo*n_tcp )
+t_form <- update( s_form, . ~ . + pops_glo*pops_mean )
+t_form <- update( s_form, . ~ . + pops_glo*pops_var )
+t_form <- update( s_form, . ~ . + pops_glo*pops_skew )
+t_glm  <- glm( t_form, data=tr2, family="binomial" )
+summary(t_glm)$coef
+glm_to_forest_p( mod=t_glm, suffix="" )
+
+# Look at how P(causal) looks at 25th, 50th, and 75th percentile...
+# ...for both pops_glo and pops_mean. Assuming other variables are at their mean.
+cm <- colMeans( x=tr2[ , ..scols ] )
+df <- as.data.frame( matrix( rep( cm, 9), nrow=9, byrow=TRUE ) )
+names(df) <- names(cm)
+df$pops_glo  <- rep( quantile( tr2$pops_glo, probs=c( 0.1, 0.5, 0.9 ) ), 3 )
+df$pops_mean <- rep( quantile( tr2$pops_mean, probs=c( 0.1, 0.5, 0.9 ) ), 
+                     rep( 3, 3 ) )
+df$pops_rel  <- 0
+df$pops_bil  <- 1
+df$dist_gene_rel <- 3
+pred <- predict( object=t_glm, newdata=df, se=TRUE )
+df$p_causal <- logistic(pred$fit)
+
+# Plot
+plot( df$pops_glo, df$p_causal, type="n", las=1, ylim=c( 0, max(df$p_causal) ),
+      xlab="pops_glo", ylab="P(causal)" )
+cols <- viridis(3)
+for( i in unique(df$pops_mean) ){
+  sub <- df[ df$pops_mean == i , ]
+  idx <- which( unique(df$pops_mean) == i )
+  lines( sub$pops_glo, sub$p_causal, col=cols[idx], lwd=3 )
+}
+legend( "topleft", legend=paste( "Mean PoPS:", c( "10th", "50th", "90th" ) ), fill=cols )
+
+
+#-------------------------------------------------------------------------------
+#   Do I need a covariate in the model to account for the fact that different
+#   traits have different power for MAGMA?
+#-------------------------------------------------------------------------------
+
+# Look at correlation between mean, SD, skewness, and kurtosis across traits
+library(e1071)
+mm <- tapply( X=tr2$magma_rel, INDEX=tr2$trait, FUN=mean )
+mv <- tapply( X=tr2$magma_rel, INDEX=tr2$trait, FUN=var )
+ms <- tapply( X=tr2$magma_rel, INDEX=tr2$trait, FUN=skewness )
+mk <- tapply( X=tr2$magma_rel, INDEX=tr2$trait, FUN=kurtosis )
+barplot( sort(mm), las=2, col=viridis( length(pm) ) )
+barplot( sort(mv), las=2, col=viridis( length(pm) ) )
+barplot( sort(ms), las=2, col=viridis( length(pm) ) )
+barplot( sort(mk), las=2, col=viridis( length(pm) ) )
+corrplot( cor( cbind( mm, mv, ms, mk ) ) )
+
+# eCDF
+plot( ecdf(tr2$magma_rel), col="white", las=1 )
+for( i in names( sort(pl) ) ){
+  sub <- tr2[ tr2$trait == i , ]
+  plot( ecdf(sub$magma_rel), add=TRUE, 
+        col=viridis( n=length(pl) )[ which( names( sort(pl) ) == i)] )
+}
+
+# Make columns for the value
+tr2$mag_rel_mean <- mm[ match( tr2$trait, names(mm) ) ]
+tr2$mag_rel_var  <- mv[ match( tr2$trait, names(mv) ) ]
+tr2$mag_rel_skew <- ms[ match( tr2$trait, names(ms) ) ]
+
+# Make models with just the trait-level covariate
+summary( glm( causal ~ mag_rel_mean, data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ mag_rel_var,  data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ mag_rel_skew, data=tr2, family="binomial" ) )$coef
+
+# Make models with magma_rel + the trait-level covariate
+summary( glm( causal ~ magma_rel,                data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ magma_rel + mag_rel_mean, data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ magma_rel + mag_rel_var,  data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ magma_rel + mag_rel_skew, data=tr2, family="binomial" ) )$coef
+
+# Add trait-level covariates to the basic model
+t_form <- update( s_form, . ~ . + mag_rel_mean )
+t_form <- update( s_form, . ~ . + mag_rel_var )
+t_form <- update( s_form, . ~ . + mag_rel_skew )
+t_glm  <- glm( t_form, data=tr2, family="binomial" )
+summary(t_glm)$coef
+glm_to_forest_p( mod=t_glm, suffix="" )
+
+# Add an interaction
+t_form <- update( s_form, . ~ . + magma_rel*n_tcp )
+t_form <- update( s_form, . ~ . + magma_rel*mag_rel_mean )
+t_form <- update( s_form, . ~ . + magma_rel*mag_rel_var )
+t_form <- update( s_form, . ~ . + magma_rel*mag_rel_skew )
+t_glm  <- glm( t_form, data=tr2, family="binomial" )
+summary(t_glm)$coef
+glm_to_forest_p( mod=t_glm, suffix="" )
+
+
+#-------------------------------------------------------------------------------
 #   Compare competing feature definitions
 #-------------------------------------------------------------------------------
 
@@ -1183,22 +1346,153 @@ mod <- glm( causal ~ rvis4 + rvis4_poly2,
             data=tr[ tr$rvis_miss == 0 , ], family="binomial" )
 quad_miss_imp( data=tr, model=mod, miss_var="rvis_miss" )
 
+# pLI
+tr$pLI[ is.na(tr$pLI) ] <- 0.5
+tr$pLI[ tr$pLI == 1 ] <- max( tr$pLI[ tr$pLI < 1 ])
+tr$pLI_log10OR <- logit10(tr$pLI)
+plot_logOR_relationship_smooth( data=tr, varname="pLI" )
+plot_logOR_relationship_smooth( data=tr[ tr$pLI_log10OR > -20 , ], 
+                                varname="pLI_log10OR" )
+
 # Number of genes in the locus
 plot_logOR_relationship_smooth( data=tr, varname="prior_n_genes_locus" )
 plot_logOR_relationship_smooth( data=tr, varname="ngenes_nearby" )
 
-# Plot relationship: number of CSs in the region
+# Number of CSs in the region
 plot_logOR_relationship_smooth( data=tr, varname="n_cs_in_region" )
 
-# Plot relationship: number of SNPs in the CS
+# Number of SNPs in the CS
 tr$log10_n_cs_snps <- log10(tr$n_cs_snps)
 plot_logOR_relationship_smooth( data=tr, varname="n_cs_snps" )
 plot_logOR_relationship_smooth( data=tr, varname="log10_n_cs_snps" )
 
-# Plot relationship: width of the CS
+# Width of the CS
 tr$log10_cs_width <- log10(tr$cs_width)
 plot_logOR_relationship_smooth( data=tr, varname="cs_width" )
 plot_logOR_relationship_smooth( data=tr, varname="log10_cs_width" )
+
+# Gene length
+summary(tr$length)
+tr$pritchard_miss <- is.na(tr$length)
+tr$length[ tr$pritchard_miss ] <- min( tr$length, na.rm=TRUE )
+tr$gene_bp_log10 <- log10( tr$length*1e3 )
+plot_logOR_relationship_smooth( data=tr, varname="length" )
+plot_logOR_relationship_smooth( data=tr, varname="gene_bp_log10" )
+mean( tr$causal[ tr$pritchard_miss ] )
+
+# CDS length
+# Impute NA to minimum
+summary(tr$CDS_length)
+tr$CDS_length[ tr$pritchard_miss ] <- min( tr$CDS_length, na.rm=TRUE )
+tr$cds_bp_log10 <- log10( tr$CDS_length*1e3 )
+plot_logOR_relationship_smooth( data=tr, varname="CDS_length" )
+plot_logOR_relationship_smooth( data=tr, varname="cds_bp_log10" )
+
+# pLI
+# Impute NA to 0.5
+summary(tr$pLI)
+tr$pLI[ is.na(tr$pLI) ] <- 0.5
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$pLI) , ], varname="pLI" )
+mean( tr$causal[ is.na(tr$pLI) ] )
+
+# LOEUF
+# Impute NA to 0
+summary(tr$LOEUF)
+tr$LOEUF[ is.na(tr$LOEUF) ] <- 0
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$LOEUF) , ], varname="LOEUF" )
+mean( tr$causal[ is.na(tr$LOEUF) ] )
+
+# ABC_count
+summary(tr$ABC_count)
+tr$ABC_count[ tr$pritchard_miss ] <- min( tr$ABC_count, na.rm=TRUE )
+plot_logOR_relationship_smooth( data=tr, varname="ABC_count" )
+
+# ABC_length_per_type
+# Impute NA to 10bp or 0bp
+summary(tr$ABC_length_per_type)
+tr$ABC_length_per_type[ tr$pritchard_miss ] <- min( tr$ABC_length_per_type, na.rm=TRUE )
+plot_logOR_relationship_smooth( data=tr, varname="ABC_length_per_type" )
+
+# Roadmap_count
+summary(tr$Roadmap_count)
+tr$Roadmap_count[ tr$pritchard_miss ] <- min( tr$Roadmap_count, na.rm=TRUE )
+plot_logOR_relationship_smooth( data=tr, varname="Roadmap_count" )
+
+# Roadmap_length_per_type
+# Impute NA to minimum value
+summary(tr$Roadmap_length_per_type)
+tr$Roadmap_length_per_type[ tr$pritchard_miss ] <- min( tr$Roadmap_length_per_type, na.rm=TRUE )
+tr$roadmap_bp_log10 <- ifelse( tr$Roadmap_length_per_type == 0, 
+                               log10( 0.2 * 1e3 ),
+                               log10( tr$Roadmap_length_per_type * 1e3 ) )
+plot_logOR_relationship_smooth( data=tr, varname="Roadmap_length_per_type" )
+plot_logOR_relationship_smooth( data=tr, varname="roadmap_bp_log10" )
+
+# promoter_count
+# Impute NA to 0
+summary(tr$promoter_count)
+tr$promoter_count[ tr$pritchard_miss ] <- min( tr$promoter_count, na.rm=TRUE )
+tr$promoter_count_log10 <- log10( tr$promoter_count + 1 )
+plot_logOR_relationship_smooth( data=tr, varname="promoter_count" )
+plot_logOR_relationship_smooth( data=tr, varname="promoter_count_log10" )
+
+# connect_decile
+# Impute NA to 0
+summary(tr$connect_decile)
+tr$connect_decile[ tr$pritchard_miss ] <- min( tr$connect_decile, na.rm=TRUE )
+plot_logOR_relationship_smooth( data=tr, varname="connect_decile" )
+
+# connect_quantile
+# Impute NA to 0
+summary(tr$connect_quantile)
+tr$connect_quantile[ tr$pritchard_miss ] <- min( tr$connect_quantile, na.rm=TRUE )
+plot_logOR_relationship_smooth( data=tr, varname="connect_quantile" )
+
+# connectedness
+# Impute NA to 0
+summary(tr$connectedness)
+tr$connectedness[ tr$pritchard_miss ] <- min( tr$connectedness, na.rm=TRUE )
+table( tr$causal, tr$connectedness, useNA="if" )
+fisher.test( table( tr$causal, tr$connectedness ) )
+
+# PPI_degree_decile
+# Impute NA to 0
+summary(tr$PPI_degree_decile)
+tr$PPI_degree_decile[ tr$pritchard_miss ] <- min( tr$PPI_degree_decile, na.rm=TRUE )
+plot_logOR_relationship_smooth( data=tr, varname="PPI_degree_decile" )
+
+# PPI_degree_quantile
+# Impute NA to 0
+summary(tr$PPI_degree_quantile)
+tr$PPI_degree_quantile[ tr$pritchard_miss ] <- min( tr$PPI_degree_quantile, na.rm=TRUE )
+plot_logOR_relationship_smooth( data=tr, varname="PPI_degree_quantile" )
+
+# PPI_degree_cat
+# Impute NA to 0
+summary(tr$PPI_degree_cat)
+tr$PPI_degree_cat[ tr$pritchard_miss ] <- min( tr$PPI_degree_cat, na.rm=TRUE )
+table( tr$causal, tr$PPI_degree_cat, useNA="if" )
+fisher.test( table( tr$causal, tr$PPI_degree_cat ) )
+
+# TF
+# Impute NA to 0
+summary(tr$TF)
+tr$TF[ tr$pritchard_miss ] <- min( tr$TF, na.rm=TRUE )
+table( tr$causal, tr$TF, useNA="if" )
+fisher.test( table( tr$causal, tr$TF ) )
+
+# HI
+# Impute NA to 0
+summary(tr$HI)
+fisher.test( table( tr$causal, tr$HI ) )
+
+# hs
+# Impute NA to maximum
+summary(tr$hs)
+tr$hs[ is.na(tr$hs) ] <- max( tr$hs, na.rm=TRUE )
+tr$hs_log10 <- ifelse( tr$hs < 1e-5, log10(1e-5), log10(tr$hs) )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$hs) , ], varname="hs" )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$hs_log10) , ], varname="hs_log10" )
 
 
 #-------------------------------------------------------------------------------
@@ -1241,13 +1535,59 @@ summary(mod1)$coef
 summary(mod2)$coef
 summary(mod3)$coef
 
-# RVIS
-mod1 <- glm( causal ~ rvis  + rvis_miss, data=tr, family="binomial" )
-mod2 <- glm( causal ~ rvis4 + rvis_miss, data=tr, family="binomial" )
+# Constraint
+tr$rvis_gt_1    <- tr$rvis > 1  & !is.na(tr$rvis)
+tr$rvis_gt_2    <- tr$rvis > 2  & !is.na(tr$rvis)
+tr$rvis_gt_3    <- tr$rvis > 3  & !is.na(tr$rvis)
+te$rvis_gt_3    <- te$rvis > 3  & !is.na(te$rvis)
+tr$rvis_gt_4    <- tr$rvis > 4  & !is.na(tr$rvis)
+tr$rvis_lt_neg1 <- tr$rvis < -1 & !is.na(tr$rvis)
+tr$rvis_lt_neg2 <- tr$rvis < -2 & !is.na(tr$rvis)
+tr$rvis_lt_neg3 <- tr$rvis < -3 & !is.na(tr$rvis)
+te$rvis_lt_neg3 <- te$rvis < -3 & !is.na(te$rvis)
+tr$rvis_lt_neg4 <- tr$rvis < -4 & !is.na(tr$rvis)
+tr$rvis4_pos    <- ifelse( tr$rvis4 < 0, 0, tr$rvis4 )
+te$rvis4_pos    <- ifelse( te$rvis4 < 0, 0, te$rvis4 )
+tr$rvis4_neg    <- ifelse( tr$rvis4 > 0, 0, tr$rvis4 )
+te$rvis4_neg    <- ifelse( te$rvis4 > 0, 0, te$rvis4 )
+tr$rvis4_pos_poly2 <- ifelse( tr$rvis4 < 0, 0, tr$rvis4^2 )
+te$rvis4_pos_poly2 <- ifelse( te$rvis4 < 0, 0, te$rvis4^2 )
+tr$rvis4_neg_poly2 <- ifelse( tr$rvis4 > 0, 0, tr$rvis4^2 )
+te$rvis4_neg_poly2 <- ifelse( te$rvis4 > 0, 0, te$rvis4^2 )
+mod0 <- glm( causal ~ rvis4 + rvis4_poly2 + rvis_miss, data=tr, family="binomial" )
+mod1 <- glm( causal ~ rvis_gt_1 + rvis_lt_neg1 + rvis_miss, data=tr, family="binomial" )
+mod2 <- glm( causal ~ rvis_gt_2 + rvis_lt_neg2 + rvis_miss, data=tr, family="binomial" )
+mod3 <- glm( causal ~ rvis_gt_3 + rvis_lt_neg3 + rvis_miss, data=tr, family="binomial" )
+mod4 <- glm( causal ~ rvis_gt_4 + rvis_lt_neg4 + rvis_miss, data=tr, family="binomial" )
+mod5 <- glm( causal ~ rvis4_pos_poly2 + rvis4_neg + rvis4_neg_poly2 + rvis_miss, data=tr, family="binomial" )
+( mod0$null.deviance - mod0$deviance ) / mod0$null.deviance
 ( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
 ( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
+( mod3$null.deviance - mod3$deviance ) / mod3$null.deviance
+( mod4$null.deviance - mod4$deviance ) / mod4$null.deviance
+( mod5$null.deviance - mod5$deviance ) / mod5$null.deviance
+AIC(mod0); AIC(mod3); AIC(mod5)
 summary(mod1)$coef
 summary(mod2)$coef
+summary(mod3)$coef
+summary(mod4)$coef
+summary(mod5)$coef
+
+# PPI
+mod1 <- glm( causal ~ PPI_degree_quantile, data=tr, family="binomial" )
+mod2 <- glm( causal ~ PPI_degree_decile,   data=tr, family="binomial" )
+mod3 <- glm( causal ~ PPI_degree_cat,      data=tr, family="binomial" )
+( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
+( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
+( mod3$null.deviance - mod3$deviance ) / mod3$null.deviance
+
+# Connectedness
+mod1 <- glm( causal ~ connect_quantile, data=tr, family="binomial" )
+mod2 <- glm( causal ~ connect_decile,   data=tr, family="binomial" )
+mod3 <- glm( causal ~ connectedness,    data=tr, family="binomial" )
+( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
+( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
+( mod3$null.deviance - mod3$deviance ) / mod3$null.deviance
 
 
 #-------------------------------------------------------------------------------
@@ -1639,8 +1979,39 @@ scols <- c( "causal",
             "magma_rel",
             "coding_glo", "coding_rel",
             "prior_n_genes_locus",
-            "prot_att_poly2", "prot_att_miss",
-            "rvis4", "rvis4_poly2" )
+            "rvis4", "rvis4_poly2",
+            # "rvis_gt_3", "rvis_lt_neg3", "rvis_miss",
+            # "rvis4_pos_poly2", "rvis4_neg", "rvis4_neg_poly2", "rvis_miss",
+            "length", "gene_bp_log10",
+            "CDS_length", "cds_bp_log10",
+            "ABC_count", "ABC_length_per_type",
+            "Roadmap_count", "Roadmap_length_per_type", "roadmap_bp_log10",
+            "promoter_count", "promoter_count_log10",
+            "connect_decile", "connectedness",
+            "PPI_degree_decile", "PPI_degree_cat",
+            "TF",
+            "hs", "hs_log10",
+            "pritchard_miss",
+            "prot_att_poly2", "prot_att_miss" )
+
+# "Basic" list of selected faeatures
+scols <- c( "causal",
+            "pops_bil", "pops_glo", "pops_rel",
+            "dist_gene_rel",
+            "magma_rel",
+            "coding_glo", "coding_rel",
+            "prior_n_genes_locus",
+            "rvis4", "rvis4_poly2",
+            # "rvis_gt_3", "rvis_lt_neg3", "rvis_miss",
+            # "rvis4_pos_poly2", "rvis4_neg", "rvis4_neg_poly2", "rvis_miss",
+            "CDS_length", "cds_bp_log10",
+            "ABC_count", 
+            "roadmap_bp_log10",
+            "connect_decile",
+            "TF",
+            "hs_log10",
+            "pritchard_miss",
+            "prot_att_poly2", "prot_att_miss" )
 
 # Raw feature correlations
 corrplot( cor( tr[ , ..scols ][,-1] ), order="hclust" )
@@ -1656,7 +2027,8 @@ devexp_s_glm <- ( s_glm$null.deviance - s_glm$deviance ) / s_glm$null.deviance
 devexp_s_glm / devexp_f_glm
 
 # Forest plot
-glm_to_forest_p( mod=s_glm )
+glm_to_forest_p( mod=s_glm, xmax=NULL )
+summary(s_glm)$coef
 
 
 #-------------------------------------------------------------------------------
@@ -1814,8 +2186,8 @@ plot_grid( p1, p2, p5, p6, ncol=2, nrow=2 )
 
 # Plot original predictions v. modeled predictions, colouring by causal status
 adj_data_te$col <- "black"
-# adj_data_te$col[ adj_data_te$best == 1 ] <- "steelblue"
-adj_data_te$col[ adj_data_te$causal ]    <- "tomato2"
+adj_data_te$col[ adj_data_te$best == 1 ] <- "steelblue"
+# adj_data_te$col[ adj_data_te$causal ]    <- "tomato2"
 plot( adj_data_te$original, adj_data_te$modeled, col=adj_data_te$col, cex=2, 
       lwd=2, xlim=c(0,1), ylim=c(0,1),
       xlab="Original P(causal)", ylab="Modeled P(causal)", las=1 )
@@ -2015,23 +2387,19 @@ hist( ev$causal_p[ !ev$pops_and_local ], breaks=seq(0,1,0.05), col="#70AD47",
 #   Make a decision tree to see how to best improve on POPS + nearest gene
 #-------------------------------------------------------------------------------
 
-# Libraries
-library(tidymodels)
-library(tidyr)
-
 # Create a decision tree model specification
 tree_spec <- decision_tree( tree_depth=3 ) %>%
   set_engine("rpart") %>%
   set_mode("classification")
 
 # Fit the model to the training data
-d_form <-  update( s_form, factor(.) ~ . - prot_att_poly2 - prot_att_miss - 
-                     rvis4 - rvis4_poly2 )
+d_form <-  as.formula("factor(causal) ~ distance_genebody + pops_glo")
+# d_form <-  update( s_form, factor(.) ~ . - prot_att_poly2 - prot_att_miss -
+#                      rvis4 - rvis4_poly2 )
 tree_fit <- tree_spec %>%
   fit( d_form, data = tr[ tr$pops_and_nearest , ] )
 
 # Plot the decision tree
-library(rpart.plot)
 rpart.plot( tree_fit$fit, type = 4, under = TRUE, box.palette = "auto")
 
 

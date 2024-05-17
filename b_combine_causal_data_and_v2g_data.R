@@ -49,8 +49,8 @@ z_to_p <- function( z, log.p=FALSE ){
 maindir <- "~/projects/causal_genes/"
 
 # Load libraries
-library(data.table)
-library(dplyr)
+suppressPackageStartupMessages( library(data.table) )
+suppressPackageStartupMessages( library(dplyr) )
 
 # Read in causal/non-causal trait-gene pairs
 cnc_file <- file.path( maindir, "causal_noncausal_trait_gene_pairs", 
@@ -166,8 +166,8 @@ m$abc_glo  <- ifelse( is.na(m$abc_score) | m$abc_score<0.01,
 
 # MAGMA
 m$magma_glo <- ifelse( is.na(m$magma_score), 
-                       median( abs(m$magma_score), na.rm=TRUE), 
-                       abs(m$magma_score) )
+                       median( m$magma_score, na.rm=TRUE ), 
+                       m$magma_score )
 m$magma_glo[ m$magma_glo > 10 ] <- 10
 
 # SMR
@@ -451,13 +451,25 @@ m4$rvis4_poly2 <- m4$rvis4^2
 
 
 #-------------------------------------------------------------------------------
+#   Add Mostafavi et al. 2023 gene-level covariates
+#-------------------------------------------------------------------------------
+
+# Read in the data, merge
+mo_file <- "~/projects/causal_genes/mostafavi2023_gene_annots/pc_genes.txt"
+mo <- fread(mo_file)
+names(mo)[ names(mo) == "GeneSymbol" ] <- "ensgid"
+mo$gene <- NULL
+m5 <- left_join( x=m4, y=mo, by="ensgid" )
+
+
+#-------------------------------------------------------------------------------
 #   Write to file
 #-------------------------------------------------------------------------------
 
 # Write
 merged_outfile <- file.path( maindir, "causal_noncausal_trait_gene_pairs", 
                              "causal_tgp_and_gene_mapping_data_300kb.tsv" )
-fwrite( x=m4, file=merged_outfile, sep="\t" )
+fwrite( x=m5, file=merged_outfile, sep="\t" )
 
 
 #-------------------------------------------------------------------------------
