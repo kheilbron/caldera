@@ -13,6 +13,16 @@
 ci95_lo <- function( beta, se, zcrit=qnorm(.025, lower.tail=FALSE) )  beta - zcrit * se
 ci95_hi <- function( beta, se, zcrit=qnorm(.025, lower.tail=FALSE) )  beta + zcrit * se
 
+# dev_exp: Calculates the deviance explained by a model
+dev_exp <- function( model, in_sample=TRUE ){
+  if(in_sample){
+    de <- ( model$null.deviance - model$deviance ) / model$null.deviance
+  }else{
+    de <- ( model$null.deviance - AIC(model) ) / model$null.deviance
+  }
+  return(de)
+}
+
 # logit10: Convert a probability into a log10 odds ratio
 logit10 <- function(p) log10( p / (1-p) )
 
@@ -87,9 +97,9 @@ v2g_devexp <- function( data, prefix ){
   mod1  <- glm( as.formula(forms[1]), data=data, family="binomial" )
   mod2  <- glm( as.formula(forms[2]), data=data, family="binomial" )
   mod3  <- glm( as.formula(forms[3]), data=data, family="binomial" )
-  de <- c( ( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance,
-           ( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance,
-           ( mod3$null.deviance - mod3$deviance ) / mod3$null.deviance )
+  de <- c( dev_exp(mod1),
+           dev_exp(mod2),
+           dev_exp(mod3) )
   names(de) <- paste0( prefix, "_", c( "bil", "glo", "rel" ) )
   de
 }
@@ -261,23 +271,19 @@ xgb_to_forest <- function( xgb_mod, suffix="_bilTRUE", xmax=NULL ){
 #-------------------------------------------------------------------------------
 
 auprc_test_set <- function( test_df, rand_mod=NULL, glm_mod=NULL, glmm_mod=NULL,
-                            las_mod=NULL, xgb_mod=NULL, ymax=NULL, avg_prot_att=TRUE ){
+                            las_mod=NULL, xgb_mod=NULL, ymax=NULL, 
+                            bias_cols=NULL, glc_cols=NULL, rm_glc=FALSE ){
   
-  # Fix RVIS covariates to their mean value in the test dataset
-  avg_rvis <- TRUE
-  if(avg_rvis){
-    test_df$rvis4       <- mean(test_df$rvis4)
-    test_df$rvis4_poly2 <- mean(test_df$rvis4_poly2)
-    test_df$rvis_gt_3   <- FALSE
-    test_df$rvis4_pos       <- 0
-    test_df$rvis4_pos_poly2 <- 0
+  # Fix potentially-biased covariates to their mean value in the test dataset
+  for( i in bias_cols ){
+    test_df[[i]] <- mean( test_df[[i]] )
   }
   
-  # Fix protein attenuation covariates to their mean value in the test dataset
-  if(avg_prot_att){
-    test_df$prot_att_poly2 <- mean(test_df$prot_att_poly2)
-    test_df$prot_att_miss  <- as.numeric(test_df$prot_att_miss)
-    test_df$prot_att_miss  <- mean(test_df$prot_att_miss)
+  # Fix gene-level covariates to their mean value in the test dataset
+  if(rm_glc){
+    for( i in glc_cols ){
+      test_df[[i]] <- mean( test_df[[i]] )
+    }
   }
   
   # Random predictor
@@ -349,20 +355,19 @@ auprc_test_set <- function( test_df, rand_mod=NULL, glm_mod=NULL, glmm_mod=NULL,
 #   plot_pr:         Plot precision-recall curve
 #-------------------------------------------------------------------------------
 
-plot_pr <- function( model, test_df, p, r, v, avg_prot_att=TRUE ){
+plot_pr <- function( model, test_df, p=0.78, r=0.34, v=0.75, 
+                     bias_cols=NULL, glc_cols=NULL, rm_glc=TRUE ){
   
-  # Fix RVIS covariates to their mean value in the test dataset
-  avg_rvis <- TRUE
-  if(avg_rvis){
-    test_df$rvis4       <- mean(test_df$rvis4)
-    test_df$rvis4_poly2 <- mean(test_df$rvis4_poly2)
+  # Fix potentially-biased covariates to their mean value in the test dataset
+  for( i in bias_cols ){
+    test_df[[i]] <- mean( test_df[[i]] )
   }
   
-  # Fix protein attenuation covariates to their mean value in the test dataset
-  if(avg_prot_att){
-    test_df$prot_att_poly2 <- mean(test_df$prot_att_poly2)
-    test_df$prot_att_miss  <- as.numeric(test_df$prot_att_miss)
-    test_df$prot_att_miss  <- mean(test_df$prot_att_miss)
+  # Fix gene-level covariates to their mean value in the test dataset
+  if(rm_glc){
+    for( i in glc_cols ){
+      test_df[[i]] <- mean( test_df[[i]] )
+    }
   }
   
   # GLM
@@ -426,24 +431,199 @@ plot_pr <- function( model, test_df, p, r, v, avg_prot_att=TRUE ){
 }
 
 
+
+#-------------------------------------------------------------------------------
+#   loto:            Leave-one-trait-out models, PR curves, and predictions
+#-------------------------------------------------------------------------------
+
+loto <- function( data, feat_cols, backwards_selection=FALSE,
+                  bias_cols=NULL, glc_cols=NULL, rm_glc=FALSE ){
+  
+  # Format input
+  data <- data[ order( data$trait, data$region, data$cs_id, data$start ) , ]
+  
+  # Initialize output
+  out <- list( trait    = unique(data$trait), 
+               model    = list( glm   = list(), 
+                                lasso = list(), 
+                                xgb   = list() ), 
+               pr_curve = list( glm   = list(), 
+                                lasso = list(), 
+                                xgb   = list() ),
+               preds    = data.table( trait  = data$trait,
+                                      causal = data$causal,
+                                      glm    = NA,
+                                      lasso  = NA,
+                                      xgb    = NA ) )
+  
+  # Loop through traits (to leave out)
+  for( i in out$trait ){
+    
+    #---------------------------------------------------------------------------
+    #   Get set up
+    #---------------------------------------------------------------------------
+    
+    # Message
+    message( date(), "   Starting trait ", which( out$trait == i ), "/", 
+             length(out$trait), ": ", i )
+    
+    # Split into training and testing sets
+    trn <- data[ data$trait != i , ]
+    tst <- data[ data$trait == i , ]
+    
+    # Fix potentially-biased covariates to their mean value in the test dataset
+    for( j in bias_cols ){
+      tst[[i]] <- mean( tst[[j]] )
+    }
+    xgb_cols <- setdiff( feat_cols, bias_cols )
+    
+    # Fix gene-level covariates to their mean value in the test dataset
+    if(rm_glc){
+      for( j in glc_cols ){
+        tst[[j]] <- mean( tst[[j]] )
+      }
+      xgb_cols <- setdiff( xgb_cols, glc_cols )
+    }
+    
+    
+    #---------------------------------------------------------------------------
+    #   Train models
+    #---------------------------------------------------------------------------
+    
+    # GLM
+    l_form <- make_formula( lhs=feat_cols[1], rhs=feat_cols[-1] )
+    l_glm0 <- glm( formula=l_form, data=trn, family="binomial" )
+    if(backwards_selection){
+      l_glm <- stats::step( object=l_glm0, k=qchisq( 1-0.05/5, df=1 ), trace=0 )
+    }else{
+      l_glm <- l_glm0
+    }
+    
+    # LASSO
+    l_las <- cv.glmnet( x=as.matrix( trn[ , ..feat_cols ] )[,-1], 
+                        y=trn[["causal"]], family="binomial", standardize=FALSE )
+    
+    # XGB
+    l_xgb <- suppressMessages( suppressWarnings(
+      train_xgb( data=trn, feat_cols=xgb_cols[-1], maxit=10 ) ) )
+    
+    
+    #---------------------------------------------------------------------------
+    #   Test models
+    #---------------------------------------------------------------------------
+    
+    # GLM
+    p_glm0 <- predict( object=l_glm, newdata=tst, type="response" )
+    p_glm  <- pr.curve( scores.class0 = p_glm0[  tst$causal ], 
+                        scores.class1 = p_glm0[ !tst$causal ], curve = TRUE )
+    
+    # LASSO
+    las_cols <- l_las$glmnet$beta@Dimnames[[1]]
+    p_las0 <- predict( l_las, newx=as.matrix( tst[ , ..las_cols ] ), 
+                       s="lambda.1se", type="response" )
+    p_las  <- pr.curve( scores.class0 = p_las0[  tst$causal ], 
+                        scores.class1 = p_las0[ !tst$causal ], curve = TRUE )
+    
+    # XGB
+    xgb_cols <- sub( pattern="TRUE$", replacement="", x=l_xgb$features[-1] )
+    te_data <- data.frame( causal=as.factor( as.integer( tst[["causal"]] ) ), 
+                           model.matrix( ~.+1, data=tst[ , ..xgb_cols ] )  )
+    te_task <- makeClassifTask( data=te_data, target="causal" )
+    p_xgb0 <- predict( l_xgb, te_task )
+    p_xgb  <- pr.curve( scores.class0 = p_xgb0$data$prob.1[  tst$causal ], 
+                        scores.class1 = p_xgb0$data$prob.1[ !tst$causal ], 
+                        curve = TRUE )
+    
+    
+    #---------------------------------------------------------------------------
+    #   Save outputs
+    #---------------------------------------------------------------------------
+    
+    # Model
+    out$model$glm[[i]]   <- l_glm
+    out$model$lasso[[i]] <- l_las
+    out$model$xgb[[i]]   <- l_xgb
+    
+    # PR curve
+    out$pr_curve$glm[[i]]   <- p_glm
+    out$pr_curve$lasso[[i]] <- p_las
+    out$pr_curve$xgb[[i]]   <- p_xgb
+    
+    # Predicted probabilities
+    out$preds$glm[ out$preds$trait == i ]   <- p_glm0
+    out$preds$lasso[ out$preds$trait == i ] <- p_las0
+    out$preds$xgb[ out$preds$trait == i ]   <- p_xgb0$data$prob.1
+  }
+  
+  # Return
+  return(out)
+}
+
+
+#-------------------------------------------------------------------------------
+#   plot_loto_pr:    Plot precision-recall curve for LOTO
+#-------------------------------------------------------------------------------
+
+plot_loto_pr <- function(loto_obj){
+  
+  # GLM
+  p_glm <- pr.curve( scores.class0 = loto_obj$preds$glm[  loto_obj$preds$causal ], 
+                     scores.class1 = loto_obj$preds$glm[ !loto_obj$preds$causal ], 
+                     curve = TRUE )
+  plot( p_glm, color="white", las=1, legend=FALSE, main="GLM" )
+  for( i in loto_obj$trait ){
+    plot( loto_obj$pr_curve$glm[[i]], color="grey90", add=TRUE )
+  }
+  plot( p_glm, color="black", las=1, auc.main=FALSE, add=TRUE )
+  
+  # LASSO
+  p_las <- pr.curve( scores.class0 = loto_obj$preds$lasso[  loto_obj$preds$causal ], 
+                     scores.class1 = loto_obj$preds$lasso[ !loto_obj$preds$causal ], 
+                     curve = TRUE )
+  plot( p_las, color="white", las=1, legend=FALSE, main="LASSO" )
+  for( i in loto_obj$trait ){
+    plot( loto_obj$pr_curve$lasso[[i]], color="grey90", add=TRUE )
+  }
+  plot( p_las, color="black", las=1, auc.main=FALSE, add=TRUE )
+  
+  # XGBoost
+  xgb_cols <- sub( pattern="TRUE$", replacement="", x=l_xgb$features[-1] )
+  te_data <- data.frame( causal=as.factor( as.integer( tst[["causal"]] ) ), 
+                         model.matrix( ~.+1, data=tst[ , ..xgb_cols ] )  )
+  te_task <- makeClassifTask( data=te_data, target="causal" )
+  p_xgb0 <- predict( l_xgb, te_task )
+  p_xgb  <- pr.curve( scores.class0 = p_xgb0$data$prob.1[  tst$causal ], 
+                      scores.class1 = p_xgb0$data$prob.1[ !tst$causal ], 
+                      curve = TRUE )
+  
+  p_xgb <- pr.curve( scores.class0 = loto_obj$preds$xgb[  loto_obj$preds$causal ], 
+                     scores.class1 = loto_obj$preds$xgb[ !loto_obj$preds$causal ], 
+                     curve = TRUE )
+  plot( p_xgb, color="white", las=1, legend=FALSE, main="XGBoost" )
+  for( i in loto_obj$trait ){
+    plot( loto_obj$pr_curve$xgb[[i]], color="grey90", add=TRUE )
+  }
+  plot( p_xgb, color="black", las=1, auc.main=FALSE, add=TRUE )
+}
+
+
 #-------------------------------------------------------------------------------
 #   recalibrate_preds: Get model predictions, plus several re-calibrations
 #-------------------------------------------------------------------------------
 
-recalibrate_preds <- function( test_df, model, avg_prot_att=TRUE ){
+recalibrate_preds <- function( test_df, model, 
+                               bias_cols=NULL, glc_cols=NULL, rm_glc=TRUE ){
   
-  # Fix RVIS covariates to their mean value in the test dataset
-  avg_rvis <- TRUE
-  if(avg_rvis){
-    test_df$rvis4       <- mean(test_df$rvis4)
-    test_df$rvis4_poly2 <- mean(test_df$rvis4_poly2)
+  # Fix potentially-biased covariates to their mean value in the test dataset
+  for( i in bias_cols ){
+    test_df[[i]] <- mean( test_df[[i]] )
   }
   
-  # Fix protein attenuation covariates to their mean value in the test dataset
-  if(avg_prot_att){
-    test_df$prot_att_poly2 <- mean(test_df$prot_att_poly2)
-    test_df$prot_att_miss  <- as.numeric(test_df$prot_att_miss)
-    test_df$prot_att_miss  <- mean(test_df$prot_att_miss)
+  # Fix gene-level covariates to their mean value in the test dataset
+  if(rm_glc){
+    for( i in glc_cols ){
+      test_df[[i]] <- mean( test_df[[i]] )
+    }
   }
   
   # Extract model predictions
@@ -574,17 +754,15 @@ recalibration_model <- function(data){
 #   train_xgb:       Train an XGBoost model
 #-------------------------------------------------------------------------------
 
-train_xgb <- function( data, feat_cols, rm_prot_att=TRUE, maxit=20 ){
+train_xgb <- function( data, feat_cols, bias_cols=NULL, glc_cols=NULL, 
+                       rm_glc=FALSE, maxit=20 ){
   
-  # If specified, remove RVIS features
-  rm_rvis <- TRUE
-  if(rm_rvis){
-    feat_cols <- grep( pattern="rvis", x=feat_cols, invert=TRUE, value=TRUE )
-  }
+  # Remove potentially-biased covariates from the feature list
+  feat_cols <- setdiff( feat_cols, bias_cols )
   
-  # If specified, remove protein attenuation features
-  if(rm_prot_att){
-    feat_cols <- grep( pattern="prot_att", x=feat_cols, invert=TRUE, value=TRUE )
+  # If specified, remove gene-level covariates
+  if(rm_glc){
+    feat_cols <- setdiff( feat_cols, glc_cols )
   }
   
   # XGBoost (basic hyperparameter tuning): raw
@@ -592,7 +770,7 @@ train_xgb <- function( data, feat_cols, rm_prot_att=TRUE, maxit=20 ){
                          model.matrix( ~.+1, data=data[ , ..feat_cols ] ) )
   tr_task <- makeClassifTask( data=tr_data, target="causal" )
   lrn <- makeLearner( cl="classif.xgboost", predict.type="prob",
-                      objective="binary:logistic", verbose=1 )
+                      objective="binary:logistic", verbose=0 )
   rdesc <- makeResampleDesc( "CV", stratify=TRUE, iters=5L )
   parallelStartSocket( cpus=detectCores() )
   pars <- makeParamSet( makeDiscreteParam( "booster",          values = "gbtree" ), 
@@ -682,33 +860,39 @@ plot_logOR_relationship_smooth <- function( data, varname ){
 maindir <- "~/projects/causal_genes/"
 
 # Load libraries and sources
-suppressPackageStartupMessages( library(data.table) )
 suppressPackageStartupMessages( library(corrplot) )
+suppressPackageStartupMessages( library(cowplot) )
+suppressPackageStartupMessages( library(data.table) )
+suppressPackageStartupMessages( library(e1071) )
 suppressPackageStartupMessages( library(glmnet) )
-suppressPackageStartupMessages( library(tidyverse) )
 suppressPackageStartupMessages( library(ggrepel) )
 suppressPackageStartupMessages( library(lme4) )
-suppressPackageStartupMessages( library(RColorBrewer) )
-suppressPackageStartupMessages( library(PRROC) )
 suppressPackageStartupMessages( library(mlr) )
-suppressPackageStartupMessages( library(xgboost) )
+suppressPackageStartupMessages( library(PRROC) )
 suppressPackageStartupMessages( library(parallel) )
 suppressPackageStartupMessages( library(parallelMap) )
 suppressPackageStartupMessages( library(patchwork) )
-suppressPackageStartupMessages( library(viridis) )
+suppressPackageStartupMessages( library(probably) )
+suppressPackageStartupMessages( library(RColorBrewer) )
+suppressPackageStartupMessages( library(rpart.plot) )
 suppressPackageStartupMessages( library(tidymodels) )
 suppressPackageStartupMessages( library(tidyr) )
-suppressPackageStartupMessages( library(rpart.plot) )
+suppressPackageStartupMessages( library(tidyverse) )
+suppressPackageStartupMessages( library(viridis) )
+suppressPackageStartupMessages( library(xgboost) )
 
 # Read in causal/non-causal TGPs annotated with gene mapping evidence
 cnc_map_file <- file.path( maindir, "causal_noncausal_trait_gene_pairs",
                            "causal_tgp_and_gene_mapping_data_300kb.tsv" )
 dt <- fread(file=cnc_map_file)
 
-# Split into training (80%) and testing (20%) sets based on trait
-set.seed(1)
-tr_traits <- sample( x=unique(dt$trait), size=round( length( unique(dt$trait) )*0.8 ) )
-te_traits <- setdiff( unique(dt$trait), tr_traits )
+# Split training and testing traits 
+# Sort traits by number of causal genes and pick every fifth one
+all_traits  <- sort( table( dt$trait[ dt$causal ] ), decreasing=TRUE )
+te_traits <- names(all_traits)[ seq( 4, length(all_traits), by=4 ) ]
+tr_traits <- setdiff( names(all_traits), te_traits )
+
+# Split training and testing sets based on trait
 tr <- dt[ dt$trait %in% tr_traits , ]
 te <- dt[ dt$trait %in% te_traits , ]
 NROW(tr) / NROW(dt)
@@ -759,63 +943,22 @@ sum( te$causal & te$pops_and_local ) / sum( te$causal )         #recall
 #///////////////////////////////////////////////////////////////////////////////
 #-------------------------------------------------------------------------------
 
-#-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
 # Run a naive regression using published best-in-locus
-pcols <- c( "causal", "pops_bil", "dist_gene_bil", "magma_bil", "twas_bil", 
+p_cols <- c( "causal", "pops_bil", "dist_gene_bil", "magma_bil", "twas_bil", 
             "clpp_bil", "abc_bil", "corr_any_bil", "pchic_any_bil", "smr_bil" )
 
 # Raw feature correlations
-corrplot( cor( tr[ , ..pcols ][,-1] ), order="hclust" )
+corrplot( cor( tr[ , ..p_cols ][,-1] ), order="hclust" )
 
 # Run regression
-p_form <- make_formula( lhs=pcols[1], rhs=pcols[-1] )
+p_form <- make_formula( lhs=p_cols[1], rhs=p_cols[-1] )
 p_glm  <- glm( formula=p_form, data=tr, family="binomial" )
 
 # Extract deviance explained
-devexp_p_glm <- ( p_glm$null.deviance - p_glm$deviance ) / p_glm$null.deviance
+devexp_p_glm <- dev_exp(p_glm)
 
 # Forest plot
 glm_to_forest(p_glm)
-
-
-#-------------------------------------------------------------------------------
-#   LASSO
-#-------------------------------------------------------------------------------
-
-# Make LASSO model
-p_las <- cv.glmnet( x=as.matrix( tr[ , ..pcols ] )[,-1], 
-                    y=tr[["causal"]], family="binomial", standardize=FALSE )
-
-# Forest plot
-lasso_to_forest(p_las)
-
-# Produce plot of deviance by lambda value
-plot(p_las)
-
-
-#-------------------------------------------------------------------------------
-#   XGBoost
-#-------------------------------------------------------------------------------
-
-# Train XGBoost model
-p_xgb <- train_xgb( data=tr, feat_cols=pcols[-1], maxit=100 )
-
-# Forest plot
-xgb_to_forest(p_xgb)
-
-
-#-------------------------------------------------------------------------------
-#   Assess performance of the models in the test set
-#-------------------------------------------------------------------------------
-
-auprc_test_set( test_df  = te, 
-                rand_mod = rand_mod,
-                glm_mod  = p_glm, 
-                las_mod  = p_las, 
-                xgb_mod  = p_xgb )
 
 
 #-------------------------------------------------------------------------------
@@ -825,7 +968,7 @@ auprc_test_set( test_df  = te,
 #-------------------------------------------------------------------------------
 
 # Run a naive regression using published best-in-locus
-acols <- c( "causal", 
+a_cols <- c( "causal", 
             "pops_bil", 
             "dist_gene_bil", "dist_tss_bil",
             "magma_bil",
@@ -840,17 +983,16 @@ acols <- c( "causal",
             "netwas_score_bil", "netwas_bon_score_bil" )
 
 # Raw feature correlations
-corrplot( cor( tr[ , ..acols ][,-1] ), order="hclust" )
+corrplot( cor( tr[ , ..a_cols ][,-1] ), order="hclust" )
 
 # Run regression
-a_form <- make_formula( lhs=acols[1], rhs=acols[-1] )
+a_form <- make_formula( lhs=a_cols[1], rhs=a_cols[-1] )
 a_glm  <- glm( formula=a_form, data=tr, family="binomial" )
 
 # Extract deviance explained
-devexp_a_glm <- ( a_glm$null.deviance - a_glm$deviance ) / a_glm$null.deviance
+devexp_a_glm <- dev_exp(a_glm)
 
 # Forest plot
-glm_to_forest(a_glm)
 glm_to_forest_p( mod=a_glm, suffix="_bilTRUE" )
 
 
@@ -953,80 +1095,71 @@ plot_logOR_relationship_smooth( data=tr, varname="netwas_bon_score_glo" )
 #   traits have different power for POPS?
 #-------------------------------------------------------------------------------
 
-# Subset to traits with >= 10 TCPs
-tr$tcp <- paste0( tr$trait, "_", tr$region, "_", tr$cs_id )
-n_tcp_per_trait <- tapply( X=tr$tcp, INDEX=tr$trait, 
-                           FUN=function(x) length( unique(x) ) )
-tr2 <- tr[ tr$trait %in% names(n_tcp_per_trait)[ n_tcp_per_trait >= 10 ] , ]
-tr2$pops_bil <- as.numeric(tr2$pops_bil)
-dim(tr2)
-
 # Look at correlation between mean, SD, skewness, and kurtosis across traits
-library(e1071)
-pl <- tapply( X=tr2$tcp,      INDEX=tr2$trait, FUN=function(x) length( unique(x) ) )
-pm <- tapply( X=tr2$pops_glo, INDEX=tr2$trait, FUN=mean )
-pv <- tapply( X=tr2$pops_glo, INDEX=tr2$trait, FUN=var )
-ps <- tapply( X=tr2$pops_glo, INDEX=tr2$trait, FUN=skewness )
-pk <- tapply( X=tr2$pops_glo, INDEX=tr2$trait, FUN=kurtosis )
+pl <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=function(x) length( unique(x) ) )
+pm <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=mean )
+pv <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=var )
+ps <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=skewness )
+pk <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=kurtosis )
 barplot( sort(pl), las=2, col=viridis( length(pm) ) )
 barplot( sort(pm), las=2, col=viridis( length(pm) ) )
 barplot( sort(pv), las=2, col=viridis( length(pm) ) )
 barplot( sort(ps), las=2, col=viridis( length(pm) ) )
 barplot( sort(pk), las=2, col=viridis( length(pm) ) )
-corrplot( cor( cbind( pc, pm, pv, ps, pk ) ) )
+corrplot( cor( cbind( pl, pm, pv, ps, pk ) ) )
 
 # eCDF
-plot( ecdf(tr2$pops_glo), col="white", las=1 )
+plot( ecdf(tr$pops_glo), col="white", las=1 )
 for( i in names( sort(pl) ) ){
-  sub <- tr2[ tr2$trait == i , ]
+  sub <- tr[ tr$trait == i , ]
   plot( ecdf(sub$pops_glo), add=TRUE, 
         col=viridis( n=length(pl) )[ which( names( sort(pl) ) == i)] )
 }
 
 # Make columns for the value
-tr2$n_tcp     <- pl[ match( tr2$trait, names(pl) ) ]
-tr2$pops_mean <- pm[ match( tr2$trait, names(pm) ) ]
-tr2$pops_var   <- pv[ match( tr2$trait, names(pv) ) ]
-tr2$pops_skew <- ps[ match( tr2$trait, names(ps) ) ]
+tr$n_tcp     <- pl[ match( tr$trait, names(pl) ) ]
+tr$pops_mean <- pm[ match( tr$trait, names(pm) ) ]
+tr$pops_var   <- pv[ match( tr$trait, names(pv) ) ]
+tr$pops_skew <- ps[ match( tr$trait, names(ps) ) ]
 
 # Make models with just the trait-level covariate
-summary( glm( causal ~ n_tcp,     data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ pops_mean, data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ pops_var,  data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ pops_skew, data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ n_tcp,     data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_mean, data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_var,  data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_skew, data=tr, family="binomial" ) )$coef
 
 # Make models with pops_glo + the trait-level covariate
-summary( glm( causal ~ pops_glo,             data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + n_tcp,     data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + pops_mean, data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + pops_var,   data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + pops_skew, data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo,             data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + n_tcp,     data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + pops_mean, data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + pops_var,  data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + pops_skew, data=tr, family="binomial" ) )$coef
 
 # Add trait-level covariates to the basic model
-t_form <- update( s_form, . ~ . + n_tcp )
-t_form <- update( s_form, . ~ . + pops_mean )
-t_form <- update( s_form, . ~ . + pops_var )
-t_form <- update( s_form, . ~ . + pops_skew )
-t_glm  <- glm( t_form, data=tr2, family="binomial" )
+t_form <- update( sg_form, . ~ . + n_tcp )
+t_form <- update( sg_form, . ~ . + pops_mean )
+t_form <- update( sg_form, . ~ . + pops_var )
+t_form <- update( sg_form, . ~ . + pops_skew )
+t_glm  <- glm( t_form, data=tr, family="binomial" )
 summary(t_glm)$coef
 glm_to_forest_p( mod=t_glm, suffix="" )
 
 # Add an interaction
-t_form <- update( s_form, . ~ . + pops_glo*n_tcp )
-t_form <- update( s_form, . ~ . + pops_glo*pops_mean )
-t_form <- update( s_form, . ~ . + pops_glo*pops_var )
-t_form <- update( s_form, . ~ . + pops_glo*pops_skew )
-t_glm  <- glm( t_form, data=tr2, family="binomial" )
+t_form <- update( sg_form, . ~ . + pops_glo*n_tcp )
+t_form <- update( sg_form, . ~ . + pops_glo*pops_mean )
+t_form <- update( sg_form, . ~ . + pops_glo*pops_var )
+t_form <- update( sg_form, . ~ . + pops_glo*pops_skew )
+t_glm  <- glm( t_form, data=tr, family="binomial" )
 summary(t_glm)$coef
 glm_to_forest_p( mod=t_glm, suffix="" )
 
 # Look at how P(causal) looks at 25th, 50th, and 75th percentile...
 # ...for both pops_glo and pops_mean. Assuming other variables are at their mean.
-cm <- colMeans( x=tr2[ , ..scols ] )
+cm <- colMeans( x=tr[ , ..sg_cols ] )
 df <- as.data.frame( matrix( rep( cm, 9), nrow=9, byrow=TRUE ) )
 names(df) <- names(cm)
-df$pops_glo  <- rep( quantile( tr2$pops_glo, probs=c( 0.1, 0.5, 0.9 ) ), 3 )
-df$pops_mean <- rep( quantile( tr2$pops_mean, probs=c( 0.1, 0.5, 0.9 ) ), 
+df$pops_glo  <- rep( quantile( tr$pops_glo, probs=c( 0.1, 0.5, 0.9 ) ), 3 )
+df$pops_mean <- rep( quantile( tr$pops_mean, probs=c( 0.1, 0.5, 0.9 ) ), 
                      rep( 3, 3 ) )
 df$pops_rel  <- 0
 df$pops_bil  <- 1
@@ -1052,11 +1185,10 @@ legend( "topleft", legend=paste( "Mean PoPS:", c( "10th", "50th", "90th" ) ), fi
 #-------------------------------------------------------------------------------
 
 # Look at correlation between mean, SD, skewness, and kurtosis across traits
-library(e1071)
-mm <- tapply( X=tr2$magma_rel, INDEX=tr2$trait, FUN=mean )
-mv <- tapply( X=tr2$magma_rel, INDEX=tr2$trait, FUN=var )
-ms <- tapply( X=tr2$magma_rel, INDEX=tr2$trait, FUN=skewness )
-mk <- tapply( X=tr2$magma_rel, INDEX=tr2$trait, FUN=kurtosis )
+mm <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=mean )
+mv <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=var )
+ms <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=skewness )
+mk <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=kurtosis )
 barplot( sort(mm), las=2, col=viridis( length(pm) ) )
 barplot( sort(mv), las=2, col=viridis( length(pm) ) )
 barplot( sort(ms), las=2, col=viridis( length(pm) ) )
@@ -1064,43 +1196,42 @@ barplot( sort(mk), las=2, col=viridis( length(pm) ) )
 corrplot( cor( cbind( mm, mv, ms, mk ) ) )
 
 # eCDF
-plot( ecdf(tr2$magma_rel), col="white", las=1 )
+plot( ecdf(tr$magma_rel), col="white", las=1 )
 for( i in names( sort(pl) ) ){
-  sub <- tr2[ tr2$trait == i , ]
+  sub <- tr[ tr$trait == i , ]
   plot( ecdf(sub$magma_rel), add=TRUE, 
         col=viridis( n=length(pl) )[ which( names( sort(pl) ) == i)] )
 }
 
 # Make columns for the value
-tr2$mag_rel_mean <- mm[ match( tr2$trait, names(mm) ) ]
-tr2$mag_rel_var  <- mv[ match( tr2$trait, names(mv) ) ]
-tr2$mag_rel_skew <- ms[ match( tr2$trait, names(ms) ) ]
+tr$mag_rel_mean <- mm[ match( tr$trait, names(mm) ) ]
+tr$mag_rel_var  <- mv[ match( tr$trait, names(mv) ) ]
+tr$mag_rel_skew <- ms[ match( tr$trait, names(ms) ) ]
 
 # Make models with just the trait-level covariate
-summary( glm( causal ~ mag_rel_mean, data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ mag_rel_var,  data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ mag_rel_skew, data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ mag_rel_mean, data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ mag_rel_var,  data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ mag_rel_skew, data=tr, family="binomial" ) )$coef
 
 # Make models with magma_rel + the trait-level covariate
-summary( glm( causal ~ magma_rel,                data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ magma_rel + mag_rel_mean, data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ magma_rel + mag_rel_var,  data=tr2, family="binomial" ) )$coef
-summary( glm( causal ~ magma_rel + mag_rel_skew, data=tr2, family="binomial" ) )$coef
+summary( glm( causal ~ magma_rel,                data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ magma_rel + mag_rel_mean, data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ magma_rel + mag_rel_var,  data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ magma_rel + mag_rel_skew, data=tr, family="binomial" ) )$coef
 
 # Add trait-level covariates to the basic model
-t_form <- update( s_form, . ~ . + mag_rel_mean )
-t_form <- update( s_form, . ~ . + mag_rel_var )
-t_form <- update( s_form, . ~ . + mag_rel_skew )
-t_glm  <- glm( t_form, data=tr2, family="binomial" )
+t_form <- update( sg_form, . ~ . + mag_rel_mean )
+t_form <- update( sg_form, . ~ . + mag_rel_var )
+t_form <- update( sg_form, . ~ . + mag_rel_skew )
+t_glm  <- glm( t_form, data=tr, family="binomial" )
 summary(t_glm)$coef
 glm_to_forest_p( mod=t_glm, suffix="" )
 
 # Add an interaction
-t_form <- update( s_form, . ~ . + magma_rel*n_tcp )
-t_form <- update( s_form, . ~ . + magma_rel*mag_rel_mean )
-t_form <- update( s_form, . ~ . + magma_rel*mag_rel_var )
-t_form <- update( s_form, . ~ . + magma_rel*mag_rel_skew )
-t_glm  <- glm( t_form, data=tr2, family="binomial" )
+t_form <- update( sg_form, . ~ . + magma_rel*mag_rel_mean )
+t_form <- update( sg_form, . ~ . + magma_rel*mag_rel_var )
+t_form <- update( sg_form, . ~ . + magma_rel*mag_rel_skew )
+t_glm  <- glm( t_form, data=tr, family="binomial" )
 summary(t_glm)$coef
 glm_to_forest_p( mod=t_glm, suffix="" )
 
@@ -1113,9 +1244,9 @@ glm_to_forest_p( mod=t_glm, suffix="" )
 mod1 <- glm( causal ~ distance_genebody, data=tr, family="binomial" )
 mod2 <- glm( causal ~ dist_gene_raw_l2g, data=tr, family="binomial" )
 mod3 <- glm( causal ~ dist_gene_glo, data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
-( mod3$null.deviance - mod3$deviance ) / mod3$null.deviance
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
 summary(mod1)$coef
 summary(mod2)$coef
 summary(mod3)$coef
@@ -1124,9 +1255,9 @@ summary(mod3)$coef
 mod1 <- glm( causal ~ distance_tss,     data=tr, family="binomial" )
 mod2 <- glm( causal ~ dist_tss_raw_l2g, data=tr, family="binomial" )
 mod3 <- glm( causal ~ dist_tss_glo, data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
-( mod3$null.deviance - mod3$deviance ) / mod3$null.deviance
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
 summary(mod1)$coef
 summary(mod2)$coef
 summary(mod3)$coef
@@ -1134,40 +1265,40 @@ summary(mod3)$coef
 # Number of genes in the locus
 mod1 <- glm( causal ~ ngenes_nearby,       data=tr, family="binomial" )
 mod2 <- glm( causal ~ prior_n_genes_locus, data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
+dev_exp(mod1)
+dev_exp(mod2)
 summary(mod1)$coef
 summary(mod2)$coef
 
 # TWAS
 mod1 <- glm( causal ~ twas_logp_glo,  data=tr, family="binomial" )
 mod2 <- glm( causal ~ twas_glo,  data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
+dev_exp(mod1)
+dev_exp(mod2)
 summary(mod1)$coef
 summary(mod2)$coef
 
 # Plot relationship: E-P Liu
 mod1 <- glm( causal ~ corr_liu_raw_l2g,  data=tr, family="binomial" )
 mod2 <- glm( causal ~ corr_liu_glo,  data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
+dev_exp(mod1)
+dev_exp(mod2)
 summary(mod1)$coef
 summary(mod2)$coef
 
 # CLPP
 mod1 <- glm( causal ~ clpp_raw_l2g,  data=tr, family="binomial" )
 mod2 <- glm( causal ~ clpp_glo,  data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
+dev_exp(mod1)
+dev_exp(mod2)
 summary(mod1)$coef
 summary(mod2)$coef
 
 # ABC
 mod1 <- glm( causal ~ abc_raw_l2g,  data=tr, family="binomial" )
 mod2 <- glm( causal ~ abc_glo,  data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
+dev_exp(mod1)
+dev_exp(mod2)
 summary(mod1)$coef
 summary(mod2)$coef
 
@@ -1175,38 +1306,9 @@ summary(mod2)$coef
 mod1 <- glm( causal ~ depict_z_glo,         data=tr, family="binomial" )
 mod2 <- glm( causal ~ netwas_score_glo,     data=tr, family="binomial" )
 mod3 <- glm( causal ~ netwas_bon_score_glo, data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
-( mod3$null.deviance - mod3$deviance ) / mod3$null.deviance
-
-
-#-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# Run a naive regression using published best-in-locus
-glo_cols <- c( "causal", "pops_glo", 
-               "dist_gene_glo", "dist_tss_glo",
-               "magma_glo",
-               "coding_glo",
-               "twas_glo",
-               "corr_liu_glo", "corr_and_glo", "corr_uli_glo", 
-               "pchic_jung_glo", "pchic_jav_glo", 
-               "clpp_glo", "smr_glo", "abc_glo",
-               "depict_z_glo", "netwas_score_glo", "netwas_bon_score_glo" )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..glo_cols ][,-1] ), order="hclust" )
-
-# Run regression
-glo_form <- make_formula( lhs=glo_cols[1], rhs=glo_cols[-1] )
-glo_glm  <- glm( formula=glo_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_glo_glm <- ( glo_glm$null.deviance - glo_glm$deviance ) / glo_glm$null.deviance
-
-# Forest plot
-glm_to_forest_p( mod=glo_glm, suffix="" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
 
 
 #-------------------------------------------------------------------------------
@@ -1221,11 +1323,11 @@ glm_to_forest_p( mod=glo_glm, suffix="" )
 
 # Plot relationship: distance to gene body
 plot_logOR_relationship_smooth( data=tr, varname="dist_gene_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$dist_gene_rel != 3 , ], varname="dist_gene_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$dist_gene_rel != -3 , ], varname="dist_gene_rel" )
 
 # Plot relationship: distance to TSS
 plot_logOR_relationship_smooth( data=tr, varname="dist_tss_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$dist_tss_rel != 3 , ], varname="dist_tss_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$dist_tss_rel != -3 , ], varname="dist_tss_rel" )
 
 # Plot relationship: POPS
 plot_logOR_relationship_smooth( data=tr, varname="pops_rel" )
@@ -1287,334 +1389,6 @@ plot_logOR_relationship_smooth( data=tr[ tr$netwas_bon_score_rel != 0 , ], varna
 
 
 #-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# Run a naive regression using published best-in-locus
-rel_cols <- c( "causal", "pops_rel", "dist_gene_rel", "dist_tss_rel", 
-               "magma_rel", "coding_rel", "twas_rel", 
-               "corr_liu_rel", "corr_and_rel", "corr_uli_rel", 
-               "pchic_jung_rel", "pchic_jav_rel",  
-               "clpp_rel", "smr_rel", "abc_rel",
-               "depict_z_rel", "netwas_score_rel", "netwas_bon_score_rel" )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..rel_cols ][,-1] ), order="hclust" )
-
-# Run regression
-rel_form <- make_formula( lhs=rel_cols[1], rhs=rel_cols[-1] )
-rel_glm  <- glm( formula=rel_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_rel_glm <- ( rel_glm$null.deviance - rel_glm$deviance ) / rel_glm$null.deviance
-
-# Forest plot
-glm_to_forest_p( mod=rel_glm, suffix="_rel" )
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Covariates-only
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   Feature engineering 
-#-------------------------------------------------------------------------------
-
-# Protein attenuation
-plot_logOR_relationship_smooth( data=tr, varname="prot_att" )
-plot_logOR_relationship_smooth( data=tr[ tr$prot_att_miss == 0 , ], 
-                                varname="prot_att" )
-plot_logOR_relationship_smooth( data=tr, varname="prot_att_poly2" )
-plot_logOR_relationship_smooth( data=tr[ tr$prot_att_miss == 0 , ], 
-                                varname="prot_att_poly2" )
-
-# Protein attenuation: What is the optimal value(s) to impute NAs to?
-mod <- glm( causal ~ prot_att + prot_att_poly2, 
-            data=tr[ tr$prot_att_miss == 0 , ], family="binomial" )
-quad_miss_imp( data=tr, model=mod, miss_var="prot_att_miss" )
-
-# RVIS, truncated
-plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis" )
-plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis4" )
-plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis4_poly2" )
-plot_logOR_relationship_smooth( data=tr, varname="rvis4" )
-
-# RVIS: What is the optimal value to impute NAs to?
-mod <- glm( causal ~ rvis4 + rvis4_poly2, 
-            data=tr[ tr$rvis_miss == 0 , ], family="binomial" )
-quad_miss_imp( data=tr, model=mod, miss_var="rvis_miss" )
-
-# pLI
-tr$pLI[ is.na(tr$pLI) ] <- 0.5
-tr$pLI[ tr$pLI == 1 ] <- max( tr$pLI[ tr$pLI < 1 ])
-tr$pLI_log10OR <- logit10(tr$pLI)
-plot_logOR_relationship_smooth( data=tr, varname="pLI" )
-plot_logOR_relationship_smooth( data=tr[ tr$pLI_log10OR > -20 , ], 
-                                varname="pLI_log10OR" )
-
-# Number of genes in the locus
-plot_logOR_relationship_smooth( data=tr, varname="prior_n_genes_locus" )
-plot_logOR_relationship_smooth( data=tr, varname="ngenes_nearby" )
-
-# Number of CSs in the region
-plot_logOR_relationship_smooth( data=tr, varname="n_cs_in_region" )
-
-# Number of SNPs in the CS
-tr$log10_n_cs_snps <- log10(tr$n_cs_snps)
-plot_logOR_relationship_smooth( data=tr, varname="n_cs_snps" )
-plot_logOR_relationship_smooth( data=tr, varname="log10_n_cs_snps" )
-
-# Width of the CS
-tr$log10_cs_width <- log10(tr$cs_width)
-plot_logOR_relationship_smooth( data=tr, varname="cs_width" )
-plot_logOR_relationship_smooth( data=tr, varname="log10_cs_width" )
-
-# Gene length
-summary(tr$length)
-tr$pritchard_miss <- is.na(tr$length)
-tr$length[ tr$pritchard_miss ] <- min( tr$length, na.rm=TRUE )
-tr$gene_bp_log10 <- log10( tr$length*1e3 )
-plot_logOR_relationship_smooth( data=tr, varname="length" )
-plot_logOR_relationship_smooth( data=tr, varname="gene_bp_log10" )
-mean( tr$causal[ tr$pritchard_miss ] )
-
-# CDS length
-# Impute NA to minimum
-summary(tr$CDS_length)
-tr$CDS_length[ tr$pritchard_miss ] <- min( tr$CDS_length, na.rm=TRUE )
-tr$cds_bp_log10 <- log10( tr$CDS_length*1e3 )
-plot_logOR_relationship_smooth( data=tr, varname="CDS_length" )
-plot_logOR_relationship_smooth( data=tr, varname="cds_bp_log10" )
-
-# pLI
-# Impute NA to 0.5
-summary(tr$pLI)
-tr$pLI[ is.na(tr$pLI) ] <- 0.5
-plot_logOR_relationship_smooth( data=tr[ !is.na(tr$pLI) , ], varname="pLI" )
-mean( tr$causal[ is.na(tr$pLI) ] )
-
-# LOEUF
-# Impute NA to 0
-summary(tr$LOEUF)
-tr$LOEUF[ is.na(tr$LOEUF) ] <- 0
-plot_logOR_relationship_smooth( data=tr[ !is.na(tr$LOEUF) , ], varname="LOEUF" )
-mean( tr$causal[ is.na(tr$LOEUF) ] )
-
-# ABC_count
-summary(tr$ABC_count)
-tr$ABC_count[ tr$pritchard_miss ] <- min( tr$ABC_count, na.rm=TRUE )
-plot_logOR_relationship_smooth( data=tr, varname="ABC_count" )
-
-# ABC_length_per_type
-# Impute NA to 10bp or 0bp
-summary(tr$ABC_length_per_type)
-tr$ABC_length_per_type[ tr$pritchard_miss ] <- min( tr$ABC_length_per_type, na.rm=TRUE )
-plot_logOR_relationship_smooth( data=tr, varname="ABC_length_per_type" )
-
-# Roadmap_count
-summary(tr$Roadmap_count)
-tr$Roadmap_count[ tr$pritchard_miss ] <- min( tr$Roadmap_count, na.rm=TRUE )
-plot_logOR_relationship_smooth( data=tr, varname="Roadmap_count" )
-
-# Roadmap_length_per_type
-# Impute NA to minimum value
-summary(tr$Roadmap_length_per_type)
-tr$Roadmap_length_per_type[ tr$pritchard_miss ] <- min( tr$Roadmap_length_per_type, na.rm=TRUE )
-tr$roadmap_bp_log10 <- ifelse( tr$Roadmap_length_per_type == 0, 
-                               log10( 0.2 * 1e3 ),
-                               log10( tr$Roadmap_length_per_type * 1e3 ) )
-plot_logOR_relationship_smooth( data=tr, varname="Roadmap_length_per_type" )
-plot_logOR_relationship_smooth( data=tr, varname="roadmap_bp_log10" )
-
-# promoter_count
-# Impute NA to 0
-summary(tr$promoter_count)
-tr$promoter_count[ tr$pritchard_miss ] <- min( tr$promoter_count, na.rm=TRUE )
-tr$promoter_count_log10 <- log10( tr$promoter_count + 1 )
-plot_logOR_relationship_smooth( data=tr, varname="promoter_count" )
-plot_logOR_relationship_smooth( data=tr, varname="promoter_count_log10" )
-
-# connect_decile
-# Impute NA to 0
-summary(tr$connect_decile)
-tr$connect_decile[ tr$pritchard_miss ] <- min( tr$connect_decile, na.rm=TRUE )
-plot_logOR_relationship_smooth( data=tr, varname="connect_decile" )
-
-# connect_quantile
-# Impute NA to 0
-summary(tr$connect_quantile)
-tr$connect_quantile[ tr$pritchard_miss ] <- min( tr$connect_quantile, na.rm=TRUE )
-plot_logOR_relationship_smooth( data=tr, varname="connect_quantile" )
-
-# connectedness
-# Impute NA to 0
-summary(tr$connectedness)
-tr$connectedness[ tr$pritchard_miss ] <- min( tr$connectedness, na.rm=TRUE )
-table( tr$causal, tr$connectedness, useNA="if" )
-fisher.test( table( tr$causal, tr$connectedness ) )
-
-# PPI_degree_decile
-# Impute NA to 0
-summary(tr$PPI_degree_decile)
-tr$PPI_degree_decile[ tr$pritchard_miss ] <- min( tr$PPI_degree_decile, na.rm=TRUE )
-plot_logOR_relationship_smooth( data=tr, varname="PPI_degree_decile" )
-
-# PPI_degree_quantile
-# Impute NA to 0
-summary(tr$PPI_degree_quantile)
-tr$PPI_degree_quantile[ tr$pritchard_miss ] <- min( tr$PPI_degree_quantile, na.rm=TRUE )
-plot_logOR_relationship_smooth( data=tr, varname="PPI_degree_quantile" )
-
-# PPI_degree_cat
-# Impute NA to 0
-summary(tr$PPI_degree_cat)
-tr$PPI_degree_cat[ tr$pritchard_miss ] <- min( tr$PPI_degree_cat, na.rm=TRUE )
-table( tr$causal, tr$PPI_degree_cat, useNA="if" )
-fisher.test( table( tr$causal, tr$PPI_degree_cat ) )
-
-# TF
-# Impute NA to 0
-summary(tr$TF)
-tr$TF[ tr$pritchard_miss ] <- min( tr$TF, na.rm=TRUE )
-table( tr$causal, tr$TF, useNA="if" )
-fisher.test( table( tr$causal, tr$TF ) )
-
-# HI
-# Impute NA to 0
-summary(tr$HI)
-fisher.test( table( tr$causal, tr$HI ) )
-
-# hs
-# Impute NA to maximum
-summary(tr$hs)
-tr$hs[ is.na(tr$hs) ] <- max( tr$hs, na.rm=TRUE )
-tr$hs_log10 <- ifelse( tr$hs < 1e-5, log10(1e-5), log10(tr$hs) )
-plot_logOR_relationship_smooth( data=tr[ !is.na(tr$hs) , ], varname="hs" )
-plot_logOR_relationship_smooth( data=tr[ !is.na(tr$hs_log10) , ], varname="hs_log10" )
-
-
-#-------------------------------------------------------------------------------
-#   Compare competing feature definitions
-#-------------------------------------------------------------------------------
-
-# Number of genes in the locus
-mod1 <- glm( causal ~ prior_n_genes_locus, data=tr, family="binomial" )
-mod2 <- glm( causal ~ ngenes_nearby, data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
-summary(mod1)$coef
-summary(mod2)$coef
-
-# Number of SNPs in the CS
-mod1 <- glm( causal ~ n_cs_snps,       data=tr, family="binomial" )
-mod2 <- glm( causal ~ log10_n_cs_snps, data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
-summary(mod1)$coef
-summary(mod2)$coef
-
-# Width of the CS
-mod1 <- glm( causal ~ cs_width,       data=tr, family="binomial" )
-mod2 <- glm( causal ~ log10_cs_width, data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
-summary(mod1)$coef
-summary(mod2)$coef
-
-# Protein attenuation
-mod1 <- glm( causal ~ prot_att_class,           data=tr, family="binomial" )
-mod2 <- glm( causal ~ prot_att,                 data=tr, family="binomial" )
-mod3 <- glm( causal ~ prot_att + prot_att_miss, data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
-( mod3$null.deviance - mod3$deviance ) / mod3$null.deviance
-anova( mod2, mod3, test="Chi" )[["Pr(>Chi)"]][2]
-summary(mod1)$coef
-summary(mod2)$coef
-summary(mod3)$coef
-
-# Constraint
-tr$rvis_gt_1    <- tr$rvis > 1  & !is.na(tr$rvis)
-tr$rvis_gt_2    <- tr$rvis > 2  & !is.na(tr$rvis)
-tr$rvis_gt_3    <- tr$rvis > 3  & !is.na(tr$rvis)
-te$rvis_gt_3    <- te$rvis > 3  & !is.na(te$rvis)
-tr$rvis_gt_4    <- tr$rvis > 4  & !is.na(tr$rvis)
-tr$rvis_lt_neg1 <- tr$rvis < -1 & !is.na(tr$rvis)
-tr$rvis_lt_neg2 <- tr$rvis < -2 & !is.na(tr$rvis)
-tr$rvis_lt_neg3 <- tr$rvis < -3 & !is.na(tr$rvis)
-te$rvis_lt_neg3 <- te$rvis < -3 & !is.na(te$rvis)
-tr$rvis_lt_neg4 <- tr$rvis < -4 & !is.na(tr$rvis)
-tr$rvis4_pos    <- ifelse( tr$rvis4 < 0, 0, tr$rvis4 )
-te$rvis4_pos    <- ifelse( te$rvis4 < 0, 0, te$rvis4 )
-tr$rvis4_neg    <- ifelse( tr$rvis4 > 0, 0, tr$rvis4 )
-te$rvis4_neg    <- ifelse( te$rvis4 > 0, 0, te$rvis4 )
-tr$rvis4_pos_poly2 <- ifelse( tr$rvis4 < 0, 0, tr$rvis4^2 )
-te$rvis4_pos_poly2 <- ifelse( te$rvis4 < 0, 0, te$rvis4^2 )
-tr$rvis4_neg_poly2 <- ifelse( tr$rvis4 > 0, 0, tr$rvis4^2 )
-te$rvis4_neg_poly2 <- ifelse( te$rvis4 > 0, 0, te$rvis4^2 )
-mod0 <- glm( causal ~ rvis4 + rvis4_poly2 + rvis_miss, data=tr, family="binomial" )
-mod1 <- glm( causal ~ rvis_gt_1 + rvis_lt_neg1 + rvis_miss, data=tr, family="binomial" )
-mod2 <- glm( causal ~ rvis_gt_2 + rvis_lt_neg2 + rvis_miss, data=tr, family="binomial" )
-mod3 <- glm( causal ~ rvis_gt_3 + rvis_lt_neg3 + rvis_miss, data=tr, family="binomial" )
-mod4 <- glm( causal ~ rvis_gt_4 + rvis_lt_neg4 + rvis_miss, data=tr, family="binomial" )
-mod5 <- glm( causal ~ rvis4_pos_poly2 + rvis4_neg + rvis4_neg_poly2 + rvis_miss, data=tr, family="binomial" )
-( mod0$null.deviance - mod0$deviance ) / mod0$null.deviance
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
-( mod3$null.deviance - mod3$deviance ) / mod3$null.deviance
-( mod4$null.deviance - mod4$deviance ) / mod4$null.deviance
-( mod5$null.deviance - mod5$deviance ) / mod5$null.deviance
-AIC(mod0); AIC(mod3); AIC(mod5)
-summary(mod1)$coef
-summary(mod2)$coef
-summary(mod3)$coef
-summary(mod4)$coef
-summary(mod5)$coef
-
-# PPI
-mod1 <- glm( causal ~ PPI_degree_quantile, data=tr, family="binomial" )
-mod2 <- glm( causal ~ PPI_degree_decile,   data=tr, family="binomial" )
-mod3 <- glm( causal ~ PPI_degree_cat,      data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
-( mod3$null.deviance - mod3$deviance ) / mod3$null.deviance
-
-# Connectedness
-mod1 <- glm( causal ~ connect_quantile, data=tr, family="binomial" )
-mod2 <- glm( causal ~ connect_decile,   data=tr, family="binomial" )
-mod3 <- glm( causal ~ connectedness,    data=tr, family="binomial" )
-( mod1$null.deviance - mod1$deviance ) / mod1$null.deviance
-( mod2$null.deviance - mod2$deviance ) / mod2$null.deviance
-( mod3$null.deviance - mod3$deviance ) / mod3$null.deviance
-
-
-#-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# Run a naive regression using published best-in-locus
-cov_cols <- c( "causal", "prior_n_genes_locus", 
-               "prot_att", "prot_att_poly2", "prot_att_miss", 
-               "rvis4", "rvis4_poly2", "rvis_miss" )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..cov_cols ][,-1] ), order="hclust" )
-
-# Run regression
-cov_form <- make_formula( lhs=cov_cols[1], rhs=cov_cols[-1] )
-cov_glm  <- glm( formula=cov_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_cov_glm <- ( cov_glm$null.deviance - cov_glm$deviance ) / cov_glm$null.deviance
-
-# Forest plot
-glm_to_forest_p(cov_glm, xmax=40)
-summary(cov_glm)$coef
-
-
-#-------------------------------------------------------------------------------
 #///////////////////////////////////////////////////////////////////////////////
 #   For each V2G method, compare BIL, global, and relative features
 #///////////////////////////////////////////////////////////////////////////////
@@ -1622,7 +1396,7 @@ summary(cov_glm)$coef
 
 # Plot deviance explained by all univariate methods
 all_de0 <- list()
-all_cols <- unique( c( acols, glo_cols, rel_cols, cov_cols ) )[-1]
+all_cols <- unique( c( a_cols, glo_cols, rel_cols, cov_cols ) )[-1]
 for( i in all_cols ){
   form <- paste0( "causal ~ ", i )
   mod  <- glm( as.formula(form), data=tr, family="binomial" )
@@ -1706,7 +1480,7 @@ corrplot( v2g_cor( data=tr, prefix="abc" ) )
 
 #-------------------------------------------------------------------------------
 #///////////////////////////////////////////////////////////////////////////////
-#   Full model: best-in-locus + global + relative + covariates
+#   Full model: best-in-locus + global + relative
 #///////////////////////////////////////////////////////////////////////////////
 #-------------------------------------------------------------------------------
 
@@ -1714,24 +1488,37 @@ corrplot( v2g_cor( data=tr, prefix="abc" ) )
 #   GLM
 #-------------------------------------------------------------------------------
 
+# Global features
+glo_cols <- c( "causal", "pops_glo", 
+               "dist_gene_glo", "dist_tss_glo",
+               "magma_glo",
+               "coding_glo",
+               "twas_glo",
+               "corr_liu_glo", "corr_and_glo", "corr_uli_glo", 
+               "pchic_jung_glo", "pchic_jav_glo", 
+               "clpp_glo", "smr_glo", "abc_glo",
+               "depict_z_glo", "netwas_score_glo", "netwas_bon_score_glo" )
+
+# Relative features
+rel_cols <- c( "causal", "pops_rel", "dist_gene_rel", "dist_tss_rel", 
+               "magma_rel", "coding_rel", "twas_rel", 
+               "corr_liu_rel", "corr_and_rel", "corr_uli_rel", 
+               "pchic_jung_rel", "pchic_jav_rel",  
+               "clpp_rel", "smr_rel", "abc_rel",
+               "depict_z_rel", "netwas_score_rel", "netwas_bon_score_rel" )
+
 # Run a naive regression using published best-in-locus
-fcols <- unique( c( acols, glo_cols, rel_cols, cov_cols ) )
+f_cols <- unique( c( a_cols, glo_cols, rel_cols, "prior_n_genes_locus" ) )
 
 # Raw feature correlations
-corrplot( cor( tr[ , ..fcols ][,-1] ), order="hclust" )
+corrplot( cor( tr[ , ..f_cols ][,-1] ), order="hclust" )
 
 # Run regression
-f_form <- make_formula( lhs=fcols[1], rhs=fcols[-1] )
+f_form <- make_formula( lhs=f_cols[1], rhs=f_cols[-1] )
 f_glm  <- glm( formula=f_form, data=tr, family="binomial" )
 
 # Extract deviance explained
-devexp_f_glm <- ( f_glm$null.deviance - f_glm$deviance ) / f_glm$null.deviance
-
-# Forest plot
-glm_to_forest_p( mod=f_glm, suffix="" )
-glm_to_forest_p( mod=f_glm, suffix="TRUE" )
-glm_to_forest_p( mod=f_glm, suffix="_glo" )
-glm_to_forest_p( mod=f_glm, suffix="_rel" )
+devexp_f_glm <- dev_exp(f_glm)
 
 
 #-------------------------------------------------------------------------------
@@ -1739,7 +1526,7 @@ glm_to_forest_p( mod=f_glm, suffix="_rel" )
 #-------------------------------------------------------------------------------
 
 # Make LASSO model
-f_las <- cv.glmnet( x=as.matrix( tr[ , ..fcols ] )[,-1], 
+f_las <- cv.glmnet( x=as.matrix( tr[ , ..f_cols ] )[,-1], 
                     y=tr[["causal"]], family="binomial", standardize=FALSE )
 
 
@@ -1747,48 +1534,93 @@ f_las <- cv.glmnet( x=as.matrix( tr[ , ..fcols ] )[,-1],
 #   XGBoost
 #-------------------------------------------------------------------------------
 
-# WITHOUT protein attenuation
-f_xgb1 <- train_xgb( data=tr, feat_cols=fcols[-1], maxit=100, rm_prot_att=TRUE )
-xgb_to_forest( xgb_mod=f_xgb1 )
-xgb_to_forest( xgb_mod=f_xgb1, suffix="_glo" )
-xgb_to_forest( xgb_mod=f_xgb1, suffix="_rel" )
-
-# WITH protein attenuation
-f_xgb2 <- train_xgb( data=tr, feat_cols=fcols[-1], maxit=100, rm_prot_att=FALSE )
-xgb_to_forest( xgb_mod=f_xgb2 )
-xgb_to_forest( xgb_mod=f_xgb2, suffix="_glo" )
-xgb_to_forest( xgb_mod=f_xgb2, suffix="_rel" )
+t0 <- proc.time()
+f_xgb <- train_xgb( data=tr, feat_cols=f_cols[-1], maxit=100 )
+t1 <- proc.time()
+t1-t0
 
 
 #-------------------------------------------------------------------------------
 #   Assess performance of the models in the test set
 #-------------------------------------------------------------------------------
 
-# AUPRC: WITHOUT protein attenuation
-f_pr1 <- auprc_test_set( test_df  = te, 
-                         rand_mod = rand_mod,
-                         glm_mod  = f_glm, 
-                         las_mod  = f_las, 
-                         xgb_mod  = f_xgb1, 
-                         ymax     = 1, 
-                         avg_prot_att = TRUE )
+# AUPRC
+f_pr <- auprc_test_set( test_df  = te, 
+                        rand_mod = rand_mod,
+                        glm_mod  = f_glm, 
+                        las_mod  = f_las, 
+                        xgb_mod  = f_xgb, 
+                        ymax     = 1 )
 
-# AUPRC: WITH protein attenuation
-f_pr2 <- auprc_test_set( test_df  = te, 
-                         rand_mod = rand_mod,
-                         glm_mod  = f_glm, 
-                         las_mod  = f_las, 
-                         xgb_mod  = f_xgb2, 
-                         ymax     = 1, 
-                         avg_prot_att = FALSE )
+# PR curves
+plot_pr( model=f_glm, test_df=te )
+plot_pr( model=f_xgb, test_df=te )
 
-# PR curves: WITHOUT protein attenuation
-plot_pr( model=f_glm,  test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=TRUE )
-plot_pr( model=f_xgb1, test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=TRUE )
 
-# PR curves: WITH protein attenuation
-plot_pr( model=f_glm,  test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=FALSE )
-plot_pr( model=f_xgb2, test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=FALSE )
+#-------------------------------------------------------------------------------
+#   LOTO
+#-------------------------------------------------------------------------------
+
+# PR curve
+f_loto <- loto( data=tr, feat_cols=f_cols )
+plot_loto_pr( loto_obj = f_loto )
+
+# Plot aggregated feature importances
+xgb_mod=f_xgb
+fi <- getFeatureImportance(xgb_mod)$res[-1,]
+fi$group <- sub( pattern="_bilTRUE$|_glo$|_rel$", replacement="", x=fi$variable )
+fi2 <- sort( tapply( X=fi$importance, INDEX=fi$group, FUN=sum ), decreasing=TRUE )
+fi3 <- data.frame( row.names=names(fi2), fi=fi2, cumsum=cumsum(fi2) )
+fi3$col <- ifelse( fi3$cumsum < 0.99, "lightgreen", "grey" )
+fi3$col[ fi3$cumsum < 0.9 ] <- "#70AD47"
+forest_plot( df=fi3, xlab="Feature importance", colour.col="col", main="XGBoost",
+             margins=c(5,9,4,1), vert.line.pos=0, mtext.col=NULL, 
+             value.col="fi", lo.col="fi", hi.col="fi", xmax=NULL )
+par( mar=c(5,5,4,1) )
+
+# Plot LASSO inclusion
+stddev <- apply( X=tr[ , ..f_cols ], MARGIN=2, FUN=sd )[-1]
+beta   <- f_las$glmnet.fit$beta[ , f_las$index[2] ]
+beta2  <- beta / stddev
+beta3  <- sort( beta2[ beta2 != 0 ], decreasing=TRUE )
+beta4  <- data.frame( row.names=names(beta3), beta=beta3 )
+beta4$cumsum <- cumsum(beta4$beta) / sum(beta4$beta)
+forest_plot( df=beta4, xlab="Standardized coefficient", 
+             margins=c(5,11,4,1), vert.line.pos=0, mtext.col=NULL, 
+             value.col="beta", lo.col="beta", hi.col="beta", xmax=NULL )
+par( mar=c(5,5,4,1) )
+
+
+# Number of times a variable is included in LASSO model selection during LOTO
+loto_obj <- f_loto
+n_inc_las <- function(loto_obj){
+  
+  # Extract whether a feature is present or not
+  out <- list()
+  for( i in f_loto$trait ){
+    sub <- f_loto$model$lasso[[i]]
+    sub2 <- sub$glmnet.fit$beta[ , sub$index[2] ]
+    out[[i]] <- sub2 != 0
+  }
+  out2 <- as.data.frame( do.call( rbind, out ) )
+  
+  # Aggregate across traits
+  out3 <- sort( colSums(out2) / NROW(out2), decreasing=TRUE )
+  out4 <- data.frame( row.names=names(out3), inc=out3 )
+  forest_plot( df=out4, xlab="Proportion included in LASSO model", 
+               margins=c(5,11,4,1), vert.line.pos=c(0,1), mtext.col=NULL, 
+               value.col="inc", lo.col="inc", hi.col="inc", xmax=1, main="LASSO" )
+  
+  # Aggregate across groups of traits
+  groups <- sub( pattern="_bil$|_glo$|_rel$", replacement="", x=names(out3) )
+  out5 <- sort( tapply( X=out3, INDEX=groups, FUN=mean ), decreasing=TRUE )
+  out6 <- data.frame( row.names=names(out5), inc=out5 )
+  out6$col <- ifelse( out6$inc >= 0.25, "lightgreen", "grey" )
+  out6$col[ out6$inc >= 0.5 ] <- "#70AD47"
+  forest_plot( df=out6, xlab="Proportion included in LASSO model", colour.col="col",
+               margins=c(5,11,4,1), vert.line.pos=c(0,1), mtext.col=NULL, 
+               value.col="inc", lo.col="inc", hi.col="inc", xmax=1, main="LASSO" )
+}
 
 
 #-------------------------------------------------------------------------------
@@ -1801,41 +1633,39 @@ plot_pr( model=f_xgb2, test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=FALSE )
 #   Model selection
 #-------------------------------------------------------------------------------
 
+# To speed things up, let's get rid of some features that are never included
+pattern <- "corr_and_|corr_uli_|pchic_|clpp_|smr_|abc_"
+f_speed_cols <- grep( pattern=pattern, x=f_cols, invert=TRUE, value=TRUE )
+f_speed_form <- make_formula( lhs=f_speed_cols[1], rhs=f_speed_cols[-1] )
+f_speed_glm  <- glm( formula=f_speed_form, data=tr, family="binomial" )
+
 # Perform backwards stepwise model selection
-# Remove features predicted to have P > 0.05/10
-o_glm0 <- stats::step( object=f_glm, k=qchisq( 1-0.05/10, df=1 ) )
+# Remove features predicted to have P > 0.05/5
+o_glm0 <- stats::step( object=f_speed_glm, k=qchisq( 1-0.05/5, df=1 ) )
 
 # Hard-coded list of features that passed model selection
-# ocols0 <- c( "causal",
-#              "pops_bil", "pops_glo", "pops_rel",
-#              "dist_gene_rel",
-#              "twas_bil", "twas_rel",
-#              "magma_glo", "magma_rel",
-#              "coding_glo", "coding_rel",
-#              "corr_liu_rel",
-#              "depict_z_glo",
-#              "netwas_score_bil", "netwas_score_rel",
-#              "netwas_bon_score_glo",
-#              "prior_n_genes_locus",
-#              "prot_att_poly2", "prot_att_miss",
-#              "rvis4", "rvis4_poly2" )
+o_cols0 <- c( "causal",
+              "pops_glo", "pops_rel",
+              "dist_gene_rel", 
+              "magma_rel",
+              "coding_glo", "coding_rel", 
+              "prior_n_genes_locus",
+              "twas_bil", 
+              "corr_liu_glo", "corr_liu_rel", 
+              "netwas_bon_score_rel" )
 
 # Manually make models and drop terms that are not Bonferroni-significant
-ocols1 <- c( "causal",
-             "pops_bil", "pops_glo", "pops_rel",
-             "dist_gene_rel",
-             "twas_bil", "twas_rel",
-             "magma_glo", "magma_rel",
-             "coding_glo", "coding_rel",
-             "corr_liu_rel",
-             "depict_z_glo",
-             "netwas_score_bil",
-             "prior_n_genes_locus",
-             "prot_att_poly2", "prot_att_miss",
-             "rvis4", "rvis4_poly2" )
+o_cols1 <- c( "causal",
+              "pops_glo", "pops_rel",
+              "dist_gene_rel", 
+              "magma_rel",
+              "coding_glo", "coding_rel", 
+              "prior_n_genes_locus",
+              "twas_bil", 
+              "corr_liu_glo" )
 
 # Run regression
-o_form1 <- make_formula( lhs=ocols1[1], rhs=ocols1[-1] )
+o_form1 <- make_formula( lhs=o_cols1[1], rhs=o_cols1[-1] )
 o_glm1  <- glm( formula=o_form1, data=tr, family="binomial" )
 
 # Forest plot
@@ -1847,29 +1677,26 @@ glm_to_forest_p( mod=o_glm1, xmax=NULL )
 #-------------------------------------------------------------------------------
 
 # "Reduced" list of selected faeatures
-ocols <- c( "causal",
-            "pops_bil", "pops_glo", "pops_rel",
-            "dist_gene_rel",
-            "twas_bil", "twas_rel",
-            "magma_glo", "magma_rel",
-            "coding_glo", "coding_rel",
-            "corr_liu_rel",
-            "depict_z_glo",
-            "netwas_score_bil",
-            "prior_n_genes_locus",
-            "prot_att_poly2", "prot_att_miss",
-            "rvis4", "rvis4_poly2" )
+o_cols <- c( "causal",
+             "pops_glo", "pops_rel",
+             "dist_gene_rel", 
+             "magma_rel",
+             "coding_glo", "coding_rel", 
+             "prior_n_genes_locus",
+             "twas_bil", 
+             "corr_liu_glo" )
 
 # Raw feature correlations
-corrplot( cor( tr[ , ..ocols ][,-1] ), order="hclust" )
+corrplot( cor( tr[ , ..o_cols ][,-1] ), order="hclust" )
 
 # Run regression
-o_form <- make_formula( lhs=ocols[1], rhs=ocols[-1] )
+o_form <- make_formula( lhs=o_cols[1], rhs=o_cols[-1] )
 o_glm  <- glm( formula=o_form, data=tr, family="binomial" )
 
 # Extract deviance explained
-devexp_o_glm <- ( o_glm$null.deviance - o_glm$deviance ) / o_glm$null.deviance
-devexp_o_glm / devexp_f_glm
+devexp_o_glm <- dev_exp(o_glm)
+dev_exp( model=o_glm, in_sample=TRUE  ) / dev_exp( model=f_glm, in_sample=TRUE )
+dev_exp( model=o_glm, in_sample=FALSE ) / dev_exp( model=f_glm, in_sample=FALSE )
 
 # Forest plot
 glm_to_forest_p( mod=o_glm, xmax=NULL )
@@ -1880,7 +1707,7 @@ glm_to_forest_p( mod=o_glm, xmax=NULL )
 #-------------------------------------------------------------------------------
 
 # Make LASSO model
-o_las <- cv.glmnet( x=as.matrix( tr[ , ..ocols ] )[,-1], 
+o_las <- cv.glmnet( x=as.matrix( tr[ , ..o_cols ] )[,-1], 
                     y=tr[["causal"]], family="binomial", standardize=FALSE )
 
 
@@ -1888,46 +1715,29 @@ o_las <- cv.glmnet( x=as.matrix( tr[ , ..ocols ] )[,-1],
 #   XGBoost
 #-------------------------------------------------------------------------------
 
-# WITHOUT protein attenuation
-o_xgb1 <- train_xgb( data=tr, feat_cols=ocols[-1], maxit=100, rm_prot_att=TRUE )
-xgb_to_forest( xgb_mod=o_xgb1, suffix="", xmax=NULL )
-
-# WITH protein attenuation
-o_xgb2 <- train_xgb( data=tr, feat_cols=ocols[-1], maxit=100, rm_prot_att=FALSE )
-xgb_to_forest( xgb_mod=o_xgb2, suffix="", xmax=NULL )
+t0 <- proc.time()
+o_xgb <- train_xgb( data=tr, feat_cols=o_cols[-1], maxit=100 )
+t1 <- proc.time()
+t1-t0
+xgb_to_forest( xgb_mod=o_xgb, suffix="", xmax=NULL )
 
 
 #-------------------------------------------------------------------------------
 #   Assess performance of the models in the test set
 #-------------------------------------------------------------------------------
 
-# AUPRC: WITHOUT protein attenuation
-o_pr1 <- auprc_test_set( test_df  = te, 
-                         rand_mod = rand_mod,
-                         glm_mod  = o_glm, 
-                         las_mod  = o_las, 
-                         xgb_mod  = o_xgb1, 
-                         ymax     = 1, 
-                         avg_prot_att = TRUE )
-f_pr1; o_pr1; o_pr1/f_pr1
+# AUPRC
+o_pr <- auprc_test_set( test_df  = te, 
+                        rand_mod = rand_mod,
+                        glm_mod  = o_glm, 
+                        las_mod  = o_las, 
+                        xgb_mod  = o_xgb, 
+                        ymax     = 1 )
+f_pr; o_pr; o_pr/f_pr
 
-# AUPRC: WITH protein attenuation
-o_pr2 <- auprc_test_set( test_df  = te, 
-                         rand_mod = rand_mod,
-                         glm_mod  = o_glm, 
-                         las_mod  = o_las, 
-                         xgb_mod  = o_xgb2, 
-                         ymax     = 1, 
-                         avg_prot_att = FALSE )
-f_pr2; o_pr2; o_pr2/f_pr2
-
-# PR curves: WITHOUT protein attenuation
-plot_pr( model=o_glm,  test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=TRUE )
-plot_pr( model=o_xgb1, test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=TRUE )
-
-# PR curves: WITH protein attenuation
-plot_pr( model=o_glm,  test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=FALSE )
-plot_pr( model=o_xgb2, test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=FALSE )
+# PR curves
+plot_pr( model=o_glm, test_df=te )
+plot_pr( model=o_xgb, test_df=te )
 
 
 #-------------------------------------------------------------------------------
@@ -1940,28 +1750,16 @@ plot_pr( model=o_xgb2, test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=FALSE )
 #   Model selection
 #-------------------------------------------------------------------------------
 
-# Hard-coded list of features from the final "reduced model"
-# scols0 <- c( "causal",
-#              "pops_bil",       "pops_glo",       "pops_rel",
-#              "dist_gene_rel",
-#              "magma_glo",      "magma_rel",
-#              "coding_glo",     "coding_rel",
-#              "prior_n_genes_locus", 
-#              "prot_att_poly2", "prot_att_miss",
-#              "rvis4", "rvis4_poly2" )
-
-# Manually make models and drop terms that are not Bonferroni-significant
-scols1 <- c( "causal",
-             "pops_bil",       "pops_glo",       "pops_rel",
-             "dist_gene_rel",
-             "magma_rel",
-             "coding_glo",     "coding_rel",
-             "prior_n_genes_locus", 
-             "prot_att_poly2", "prot_att_miss",
-             "rvis4", "rvis4_poly2" )
+# Subset "reduced model" features to the big 4
+s_cols1 <- c( "causal",
+              "pops_glo", "pops_rel",
+              "dist_gene_rel", 
+              "magma_rel",
+              "coding_glo", "coding_rel", 
+              "prior_n_genes_locus" )
 
 # Run regression
-s_form1 <- make_formula( lhs=scols1[1], rhs=scols1[-1] )
+s_form1 <- make_formula( lhs=s_cols1[1], rhs=s_cols1[-1] )
 s_glm1  <- glm( formula=s_form1, data=tr, family="binomial" )
 
 # Forest plot
@@ -1972,63 +1770,32 @@ glm_to_forest_p( mod=s_glm1, xmax=NULL )
 #   GLM
 #-------------------------------------------------------------------------------
 
-# "Basic" list of selected faeatures
-scols <- c( "causal",
-            "pops_bil", "pops_glo", "pops_rel",
-            "dist_gene_rel",
-            "magma_rel",
-            "coding_glo", "coding_rel",
-            "prior_n_genes_locus",
-            "rvis4", "rvis4_poly2",
-            # "rvis_gt_3", "rvis_lt_neg3", "rvis_miss",
-            # "rvis4_pos_poly2", "rvis4_neg", "rvis4_neg_poly2", "rvis_miss",
-            "length", "gene_bp_log10",
-            "CDS_length", "cds_bp_log10",
-            "ABC_count", "ABC_length_per_type",
-            "Roadmap_count", "Roadmap_length_per_type", "roadmap_bp_log10",
-            "promoter_count", "promoter_count_log10",
-            "connect_decile", "connectedness",
-            "PPI_degree_decile", "PPI_degree_cat",
-            "TF",
-            "hs", "hs_log10",
-            "pritchard_miss",
-            "prot_att_poly2", "prot_att_miss" )
-
-# "Basic" list of selected faeatures
-scols <- c( "causal",
-            "pops_bil", "pops_glo", "pops_rel",
-            "dist_gene_rel",
-            "magma_rel",
-            "coding_glo", "coding_rel",
-            "prior_n_genes_locus",
-            "rvis4", "rvis4_poly2",
-            # "rvis_gt_3", "rvis_lt_neg3", "rvis_miss",
-            # "rvis4_pos_poly2", "rvis4_neg", "rvis4_neg_poly2", "rvis_miss",
-            "CDS_length", "cds_bp_log10",
-            "ABC_count", 
-            "roadmap_bp_log10",
-            "connect_decile",
-            "TF",
-            "hs_log10",
-            "pritchard_miss",
-            "prot_att_poly2", "prot_att_miss" )
+# "Basic" list of selected features
+s_cols <- c( "causal",
+             "pops_glo", "pops_rel",
+             "dist_gene_rel", 
+             "magma_rel",
+             "coding_glo", "coding_rel", 
+             "prior_n_genes_locus" )
 
 # Raw feature correlations
-corrplot( cor( tr[ , ..scols ][,-1] ), order="hclust" )
+corrplot( cor( tr[ , ..s_cols ][,-1] ), order="hclust" )
 
 # Run regression
-s_form <- make_formula( lhs=scols[1], rhs=scols[-1] )
+s_form <- make_formula( lhs=s_cols[1], rhs=s_cols[-1] )
 s_glm  <- glm( formula=s_form, data=tr, family="binomial" )
 # summary(s_glm)$coef
 # saveRDS( object=s_glm, file=file.path( maindir, "scz_glm.rds" ) )
 
 # Extract deviance explained
-devexp_s_glm <- ( s_glm$null.deviance - s_glm$deviance ) / s_glm$null.deviance
-devexp_s_glm / devexp_f_glm
+devexp_s_glm <- dev_exp(s_glm)
+dev_exp( model=s_glm, in_sample=TRUE  ) / dev_exp( model=f_glm, in_sample=TRUE )
+dev_exp( model=s_glm, in_sample=FALSE ) / dev_exp( model=f_glm, in_sample=FALSE )
+dev_exp( model=s_glm, in_sample=TRUE  ) / dev_exp( model=o_glm, in_sample=TRUE )
+dev_exp( model=s_glm, in_sample=FALSE ) / dev_exp( model=o_glm, in_sample=FALSE )
 
 # Forest plot
 glm_to_forest_p( mod=s_glm, xmax=NULL )
-summary(s_glm)$coef
 
 
 #-------------------------------------------------------------------------------
@@ -2036,7 +1803,7 @@ summary(s_glm)$coef
 #-------------------------------------------------------------------------------
 
 # Make LASSO model
-s_las <- cv.glmnet( x=as.matrix( tr[ , ..scols ] )[,-1], 
+s_las <- cv.glmnet( x=as.matrix( tr[ , ..s_cols ] )[,-1], 
                     y=tr[["causal"]], family="binomial", standardize=FALSE )
 
 
@@ -2044,48 +1811,665 @@ s_las <- cv.glmnet( x=as.matrix( tr[ , ..scols ] )[,-1],
 #   XGBoost
 #-------------------------------------------------------------------------------
 
-# WITHOUT protein attenuation
-s_xgb1 <- train_xgb( data=tr, feat_cols=scols[-1], maxit=100, rm_prot_att=TRUE )
-xgb_to_forest( xgb_mod=s_xgb1, suffix="", xmax=NULL )
-
-# WITH protein attenuation
-s_xgb2 <- train_xgb( data=tr, feat_cols=scols[-1], maxit=100, rm_prot_att=FALSE )
-xgb_to_forest( xgb_mod=s_xgb2, suffix="", xmax=NULL )
+s_xgb <- train_xgb( data=tr, feat_cols=s_cols[-1], maxit=100 )
+xgb_to_forest( xgb_mod=s_xgb, suffix="", xmax=NULL )
 
 
 #-------------------------------------------------------------------------------
 #   Assess performance of the models in the test set
 #-------------------------------------------------------------------------------
 
-# AUPRC: WITHOUT protein attenuation
-s_pr1 <- auprc_test_set( test_df  = te, 
+# AUPRC
+s_pr <- auprc_test_set( test_df  = te, 
                          rand_mod = rand_mod,
                          glm_mod  = s_glm, 
                          las_mod  = s_las, 
-                         xgb_mod  = s_xgb1, 
-                         ymax     = 1, 
-                         avg_prot_att = TRUE )
-f_pr1; s_pr1; s_pr1/f_pr1
-o_pr1; s_pr1; s_pr1/o_pr1
+                         xgb_mod  = s_xgb, 
+                         ymax     = 1 )
+f_pr; s_pr; s_pr/f_pr
+o_pr; s_pr; s_pr/o_pr
 
-# AUPRC: WITH protein attenuation
-s_pr2 <- auprc_test_set( test_df  = te, 
-                         rand_mod = rand_mod,
-                         glm_mod  = s_glm, 
-                         las_mod  = s_las, 
-                         xgb_mod  = s_xgb2, 
-                         ymax     = 1, 
-                         avg_prot_att = FALSE )
-f_pr2; s_pr2; s_pr2/f_pr2
-o_pr2; s_pr2; s_pr2/o_pr2
+# PR curves
+plot_pr( model=s_glm, test_df=te )
+plot_pr( model=s_xgb, test_df=te )
 
-# PR curves: WITHOUT protein attenuation
-plot_pr( model=s_glm,  test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=TRUE )
-plot_pr( model=s_xgb1, test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=TRUE )
 
-# PR curves: WITH protein attenuation
-plot_pr( model=s_glm,  test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=FALSE )
-plot_pr( model=s_xgb2, test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=FALSE )
+#-------------------------------------------------------------------------------
+#   LOTO
+#-------------------------------------------------------------------------------
+
+pattern <- "^causal$|^pops_|^dist_gene_|^magma_|^coding_|^prior"
+s_loto <- loto( data=tr, feat_cols=grep( pattern=pattern, x=f_cols, value=TRUE ), 
+                backwards_selection=TRUE )
+plot_loto_pr( loto_obj = f_loto )
+plot_loto_pr( loto_obj = s_loto )
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Gene-level covariates (GLCs)
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   Feature engineering: number of nearby genes
+#-------------------------------------------------------------------------------
+
+# Number of genes in the locus
+plot_logOR_relationship_smooth( data=tr, varname="prior_n_genes_locus" )
+plot_logOR_relationship_smooth( data=tr, varname="ngenes_nearby" )
+
+
+#-------------------------------------------------------------------------------
+#   Feature engineering: bias features
+#-------------------------------------------------------------------------------
+
+# RVIS, truncated
+plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis" )
+plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis4" )
+plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis4_poly2" )
+plot_logOR_relationship_smooth( data=tr, varname="rvis4" )
+
+# RVIS: What is the optimal value to impute NAs to?
+mod <- glm( causal ~ rvis4 + rvis4_poly2, 
+            data=tr[ tr$rvis_miss == 0 , ], family="binomial" )
+quad_miss_imp( data=tr, model=mod, miss_var="rvis_miss" )
+
+# pLI
+plot_logOR_relationship_smooth( data=tr, varname="pLI" )
+plot_logOR_relationship_smooth( data=tr, varname="pLI_log10OR" )
+plot_logOR_relationship_smooth( data=tr[ tr$pLI_log10OR_pos > 0 , ], varname="pLI_log10OR_pos" )
+plot_logOR_relationship_smooth( data=tr[ tr$pLI_log10OR_neg < 0 , ], varname="pLI_log10OR_neg" )
+
+# LOEUF
+plot_logOR_relationship_smooth( data=tr, varname="LOEUF" )
+
+# hs
+plot_logOR_relationship_smooth( data=tr, varname="hs" )
+plot_logOR_relationship_smooth( data=tr, varname="hs_log10" )
+
+# Gene length
+plot_logOR_relationship_smooth( data=tr, varname="length" )
+plot_logOR_relationship_smooth( data=tr, varname="gene_bp_log10" )
+
+# CDS length
+plot_logOR_relationship_smooth( data=tr, varname="CDS_length" )
+plot_logOR_relationship_smooth( data=tr, varname="cds_bp_log10" )
+
+
+#-------------------------------------------------------------------------------
+#   Feature engineering: GLCs
+#-------------------------------------------------------------------------------
+
+# Protein attenuation
+plot_logOR_relationship_smooth( data=tr, varname="prot_att" )
+plot_logOR_relationship_smooth( data=tr[ tr$prot_att_miss == 0 , ], 
+                                varname="prot_att" )
+plot_logOR_relationship_smooth( data=tr, varname="prot_att_poly2" )
+plot_logOR_relationship_smooth( data=tr[ tr$prot_att_miss == 0 , ], 
+                                varname="prot_att_poly2" )
+
+# Protein attenuation: What is the optimal value(s) to impute NAs to?
+mod <- glm( causal ~ prot_att + prot_att_poly2, 
+            data=tr[ tr$prot_att_miss == 0 , ], family="binomial" )
+quad_miss_imp( data=tr, model=mod, miss_var="prot_att_miss" )
+
+# ABC_count
+plot_logOR_relationship_smooth( data=tr, varname="ABC_count" )
+
+# ABC_length_per_type
+plot_logOR_relationship_smooth( data=tr, varname="ABC_length_per_type" )
+plot_logOR_relationship_smooth( data=tr, varname="abc_bp_log10" )
+
+# Roadmap_count
+plot_logOR_relationship_smooth( data=tr, varname="Roadmap_count" )
+
+# Roadmap_length_per_type
+plot_logOR_relationship_smooth( data=tr, varname="Roadmap_length_per_type" )
+plot_logOR_relationship_smooth( data=tr, varname="roadmap_bp_log10" )
+
+# promoter_count
+plot_logOR_relationship_smooth( data=tr, varname="promoter_count" )
+plot_logOR_relationship_smooth( data=tr, varname="promoter_count_log10" )
+
+# connect_decile
+plot_logOR_relationship_smooth( data=tr, varname="connect_decile" )
+
+# connect_quantile
+plot_logOR_relationship_smooth( data=tr, varname="connect_quantile" )
+
+# connectedness
+table( tr$causal, tr$connectedness, useNA="if" )
+fisher.test( table( tr$causal, tr$connectedness ) )
+
+# PPI_degree_decile
+plot_logOR_relationship_smooth( data=tr, varname="PPI_degree_decile" )
+
+# PPI_degree_quantile
+plot_logOR_relationship_smooth( data=tr, varname="PPI_degree_quantile" )
+
+# PPI_degree_cat
+table( tr$causal, tr$PPI_degree_cat, useNA="if" )
+fisher.test( table( tr$causal, tr$PPI_degree_cat ) )
+
+# TF
+table( tr$causal, tr$TF, useNA="if" )
+fisher.test( table( tr$causal, tr$TF ) )
+
+
+#-------------------------------------------------------------------------------
+#   Compare competing feature definitions
+#-------------------------------------------------------------------------------
+
+# Number of genes in the locus
+mod1 <- glm( causal ~ prior_n_genes_locus, data=tr, family="binomial" )
+mod2 <- glm( causal ~ ngenes_nearby, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+summary(mod1)$coef
+summary(mod2)$coef
+
+# Number of SNPs in the CS
+mod1 <- glm( causal ~ n_cs_snps,       data=tr, family="binomial" )
+mod2 <- glm( causal ~ log10_n_cs_snps, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+summary(mod1)$coef
+summary(mod2)$coef
+
+# Width of the CS
+mod1 <- glm( causal ~ cs_width,       data=tr, family="binomial" )
+mod2 <- glm( causal ~ log10_cs_width, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+summary(mod1)$coef
+summary(mod2)$coef
+
+# Protein attenuation
+mod1 <- glm( causal ~ prot_att_class,           data=tr, family="binomial" )
+mod2 <- glm( causal ~ prot_att,                 data=tr, family="binomial" )
+mod3 <- glm( causal ~ prot_att + prot_att_miss, data=tr, family="binomial" )
+mod4 <- glm( causal ~ prot_att + prot_att_poly2 + prot_att_miss, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+dev_exp(mod4)
+anova( mod2, mod3, test="Chi" )[["Pr(>Chi)"]][2]
+anova( mod3, mod4, test="Chi" )[["Pr(>Chi)"]][2]
+summary(mod1)$coef
+summary(mod2)$coef
+summary(mod3)$coef
+summary(mod4)$coef
+
+# RVIS
+tr$rvis_gt_1    <- tr$rvis > 1  & !is.na(tr$rvis)
+tr$rvis_gt_2    <- tr$rvis > 2  & !is.na(tr$rvis)
+tr$rvis_gt_3    <- tr$rvis > 3  & !is.na(tr$rvis)
+te$rvis_gt_3    <- te$rvis > 3  & !is.na(te$rvis)
+tr$rvis_gt_4    <- tr$rvis > 4  & !is.na(tr$rvis)
+tr$rvis_lt_neg1 <- tr$rvis < -1 & !is.na(tr$rvis)
+tr$rvis_lt_neg2 <- tr$rvis < -2 & !is.na(tr$rvis)
+tr$rvis_lt_neg3 <- tr$rvis < -3 & !is.na(tr$rvis)
+te$rvis_lt_neg3 <- te$rvis < -3 & !is.na(te$rvis)
+tr$rvis_lt_neg4 <- tr$rvis < -4 & !is.na(tr$rvis)
+tr$rvis4_pos    <- ifelse( tr$rvis4 < 0, 0, tr$rvis4 )
+te$rvis4_pos    <- ifelse( te$rvis4 < 0, 0, te$rvis4 )
+tr$rvis4_neg    <- ifelse( tr$rvis4 > 0, 0, tr$rvis4 )
+te$rvis4_neg    <- ifelse( te$rvis4 > 0, 0, te$rvis4 )
+tr$rvis4_pos_poly2 <- ifelse( tr$rvis4 < 0, 0, tr$rvis4^2 )
+te$rvis4_pos_poly2 <- ifelse( te$rvis4 < 0, 0, te$rvis4^2 )
+tr$rvis4_neg_poly2 <- ifelse( tr$rvis4 > 0, 0, tr$rvis4^2 )
+te$rvis4_neg_poly2 <- ifelse( te$rvis4 > 0, 0, te$rvis4^2 )
+mod0 <- glm( causal ~ rvis4 +                    rvis_miss, data=tr, family="binomial" )
+mod1 <- glm( causal ~ rvis_gt_1 + rvis_lt_neg1 + rvis_miss, data=tr, family="binomial" )
+mod2 <- glm( causal ~ rvis_gt_2 + rvis_lt_neg2 + rvis_miss, data=tr, family="binomial" )
+mod3 <- glm( causal ~ rvis_gt_3 + rvis_lt_neg3 + rvis_miss, data=tr, family="binomial" )
+mod4 <- glm( causal ~ rvis_gt_4 + rvis_lt_neg4 + rvis_miss, data=tr, family="binomial" )
+mod5 <- glm( causal ~ rvis4_pos + rvis4_neg    + rvis_miss, data=tr, family="binomial" )
+dev_exp(mod0)
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+dev_exp(mod4)
+dev_exp(mod5)
+AIC(mod0); AIC(mod3); AIC(mod5)
+summary(mod1)$coef
+summary(mod2)$coef
+summary(mod3)$coef
+summary(mod4)$coef
+summary(mod5)$coef
+
+# pLI
+mod1 <- glm( causal ~ pLI,                               data=tr, family="binomial" )
+mod2 <- glm( causal ~ pLI_lt_0.1,                        data=tr, family="binomial" )
+mod3 <- glm( causal ~ pLI_lt_0.1 + pLI_gt_0.9,           data=tr, family="binomial" )
+mod4 <- glm( causal ~ pLI_log10OR,                       data=tr, family="binomial" )
+mod5 <- glm( causal ~ pLI_log10OR_neg,                   data=tr, family="binomial" )
+mod6 <- glm( causal ~ pLI_log10OR_neg + pLI_log10OR_pos, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+dev_exp(mod4)
+dev_exp(mod5)
+dev_exp(mod6)
+AIC(mod1); AIC(mod2); AIC(mod3); AIC(mod4); AIC(mod5); AIC(mod6)
+summary(mod1)$coef
+summary(mod2)$coef
+summary(mod3)$coef
+summary(mod4)$coef
+summary(mod5)$coef
+summary(mod6)$coef
+
+# PPI
+mod1 <- glm( causal ~ PPI_degree_quantile, data=tr, family="binomial" )
+mod2 <- glm( causal ~ PPI_degree_decile,   data=tr, family="binomial" )
+mod3 <- glm( causal ~ PPI_degree_cat,      data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+
+# Connectedness
+mod1 <- glm( causal ~ connect_quantile, data=tr, family="binomial" )
+mod2 <- glm( causal ~ connect_decile,   data=tr, family="binomial" )
+mod3 <- glm( causal ~ connectedness,    data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Full model + GLCs
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   GLM
+#-------------------------------------------------------------------------------
+
+# Run a naive regression using published best-in-locus
+bias_cols <- c( "rvis4",           "rvis_miss",
+                "pLI_log10OR_neg", "pLI_lt_0.1",
+                "LOEUF",           "hs_log10",
+                "gene_bp_log10",   "cds_bp_log10",
+                "pritchard_miss" )
+glc_cols  <- c( "prot_att",             "prot_att_miss", 
+                "pLI_log10OR_pos",      "pLI_gt_0.9",
+                "ABC_count",            "abc_bp_log10",
+                "Roadmap_count",        "roadmap_bp_log10",
+                "promoter_count_log10",
+                "TF",
+                "connect_decile",       "connectedness",
+                "PPI_degree_decile",    "PPI_degree_cat" )
+fg_cols   <- c( f_cols, bias_cols, glc_cols )
+
+# Raw feature correlations
+corrplot( cor( tr[ , ..fg_cols ][,-1] ), order="hclust" )
+
+# Run regression
+fg_form <- make_formula( lhs=fg_cols[1], rhs=fg_cols[-1] )
+fg_glm  <- glm( formula=fg_form, data=tr, family="binomial" )
+
+# Extract deviance explained
+devexp_fg_glm <- dev_exp(fg_glm)
+
+
+#-------------------------------------------------------------------------------
+#   LASSO
+#-------------------------------------------------------------------------------
+
+# Make LASSO model
+fg_las <- cv.glmnet( x=as.matrix( tr[ , ..fg_cols ] )[,-1], 
+                     y=tr[["causal"]], family="binomial", standardize=FALSE )
+
+
+#-------------------------------------------------------------------------------
+#   XGBoost
+#-------------------------------------------------------------------------------
+
+# REMOVE gene-level covariates
+t0 <- proc.time()
+fg_xgb1 <- train_xgb( data=tr, feat_cols=fg_cols[-1], maxit=100, 
+                      bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+t1 <- proc.time()
+t1-t0
+
+# KEEP gene-level covariates
+t0 <- proc.time()
+fg_xgb2 <- train_xgb( data=tr, feat_cols=fg_cols[-1], maxit=100, 
+                      bias_cols=bias_cols )
+t1 <- proc.time()
+t1-t0
+
+
+#-------------------------------------------------------------------------------
+#   Assess performance of the models in the test set
+#-------------------------------------------------------------------------------
+
+# AUPRC: REMOVE gene-level covariates
+fg_pr1 <- auprc_test_set( test_df   = te, 
+                          rand_mod  = rand_mod,
+                          glm_mod   = fg_glm, 
+                          las_mod   = fg_las, 
+                          xgb_mod   = fg_xgb1, 
+                          ymax      = 1, 
+                          bias_cols = bias_cols, 
+                          glc_cols  = glc_cols,
+                          rm_glc    = TRUE )
+
+# AUPRC: KEEP gene-level covariates
+fg_pr2 <- auprc_test_set( test_df   = te, 
+                          rand_mod  = rand_mod,
+                          glm_mod   = fg_glm, 
+                          las_mod   = fg_las, 
+                          xgb_mod   = fg_xgb2, 
+                          ymax      = 1, 
+                          bias_cols = bias_cols )
+
+# PR curves: REMOVE gene-level covariates
+plot_pr( model=fg_glm,  test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+plot_pr( model=fg_xgb1, test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+
+# PR curves: KEEP gene-level covariates
+plot_pr( model=fg_glm,  test_df=te, bias_cols=bias_cols )
+plot_pr( model=fg_xgb2, test_df=te, bias_cols=bias_cols )
+
+
+#-------------------------------------------------------------------------------
+#   LOTO
+#-------------------------------------------------------------------------------
+
+fg_loto <- loto( data=tr, feat_cols=fg_cols, backwards_selection=FALSE, 
+                 bias_cols=bias_cols )
+plot_loto_pr( loto_obj = f_loto )
+plot_loto_pr( loto_obj = fg_loto )
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Reduced model + GLCs
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   Model selection
+#-------------------------------------------------------------------------------
+
+# To speed things up, let's get rid of some features that are never included
+pattern <- "corr_and_|corr_uli_|pchic_|clpp_|smr_|abc_"
+fg_speed_cols <- grep( pattern=pattern, x=fg_cols, invert=TRUE, value=TRUE )
+fg_speed_form <- make_formula( lhs=fg_speed_cols[1], rhs=fg_speed_cols[-1] )
+fg_speed_glm  <- glm( formula=fg_speed_form, data=tr, family="binomial" )
+
+# Perform backwards stepwise model selection
+# Remove features predicted to have P > 0.05/5
+og_glm0 <- stats::step( object=fg_speed_glm, k=qchisq( 1-0.05/5, df=1 ) )
+
+# Hard-coded list of features
+og_cols1 <- c( "causal",
+               "pops_glo", "pops_rel",
+               "dist_gene_rel",
+               "magma_rel",
+               "coding_rel", 
+               "prior_n_genes_locus",
+               "twas_bil", 
+               "netwas_bon_score_bil",
+               "corr_liu_rel", 
+               "pLI_lt_0.1", "prot_att", "ABC_count", "Roadmap_count" )
+
+# Manually make models and drop terms that are not Bonferroni-significant
+og_cols <- c( "causal",
+              "pops_glo", "pops_rel",
+              "dist_gene_rel",
+              "magma_rel",
+              "coding_rel", 
+              "prior_n_genes_locus",
+              "twas_bil", 
+              "corr_liu_rel", 
+              "pLI_lt_0.1", "ABC_count", "Roadmap_count" )
+
+# Run regression
+og_form1 <- make_formula( lhs=og_cols1[1], rhs=og_cols1[-1] )
+og_glm1  <- glm( formula=og_form1, data=tr, family="binomial" )
+
+# Forest plot
+glm_to_forest_p( mod=og_glm1, xmax=NULL )
+
+
+#-------------------------------------------------------------------------------
+#   GLM
+#-------------------------------------------------------------------------------
+
+# "Reduced" list of selected features
+og_cols <- c( "causal",
+              "pops_glo", "pops_rel",
+              "dist_gene_rel",
+              "magma_rel",
+              "coding_rel", 
+              "prior_n_genes_locus",
+              "twas_bil", 
+              "corr_liu_rel", 
+              "pLI_lt_0.1", "ABC_count", "Roadmap_count" )
+
+# Raw feature correlations
+corrplot( cor( tr[ , ..og_cols ][,-1] ), order="hclust" )
+
+# Run regression
+og_form <- make_formula( lhs=og_cols[1], rhs=og_cols[-1] )
+og_glm  <- glm( formula=og_form, data=tr, family="binomial" )
+
+# Extract deviance explained
+devexp_og_glm <- dev_exp(og_glm)
+dev_exp( model=og_glm, in_sample=TRUE  ) / dev_exp( model=fg_glm, in_sample=TRUE  )
+dev_exp( model=og_glm, in_sample=FALSE ) / dev_exp( model=fg_glm, in_sample=FALSE )
+
+# Forest plot
+glm_to_forest_p( mod=o_glm, xmax=NULL )
+
+
+#-------------------------------------------------------------------------------
+#   LASSO
+#-------------------------------------------------------------------------------
+
+# Make LASSO model
+og_las <- cv.glmnet( x=as.matrix( tr[ , ..og_cols ] )[,-1], 
+                     y=tr[["causal"]], family="binomial", standardize=FALSE )
+
+
+#-------------------------------------------------------------------------------
+#   XGBoost
+#-------------------------------------------------------------------------------
+
+# REMOVE gene-level covariates
+og_xgb1 <- train_xgb( data=tr, feat_cols=og_cols[-1], maxit=100, 
+                      bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+xgb_to_forest( xgb_mod=og_xgb1, suffix="", xmax=NULL )
+
+# KEEP gene-level covariates
+og_xgb2 <- train_xgb( data=tr, feat_cols=og_cols[-1], maxit=100, 
+                      bias_cols=bias_cols )
+xgb_to_forest( xgb_mod=og_xgb2, suffix="", xmax=NULL )
+
+
+#-------------------------------------------------------------------------------
+#   Assess performance of the models in the test set
+#-------------------------------------------------------------------------------
+
+# AUPRC: REMOVE gene-level covariates
+og_pr1 <- auprc_test_set( test_df   = te, 
+                          rand_mod  = rand_mod,
+                          glm_mod   = og_glm, 
+                          las_mod   = og_las, 
+                          xgb_mod   = og_xgb1, 
+                          ymax      = 1, 
+                          bias_cols = bias_cols, 
+                          glc_cols  = glc_cols,
+                          rm_glc    = TRUE )
+fg_pr1; og_pr1; og_pr1/fg_pr1
+
+# AUPRC: KEEP gene-level covariates
+og_pr2 <- auprc_test_set( test_df   = te, 
+                          rand_mod  = rand_mod,
+                          glm_mod   = og_glm, 
+                          las_mod   = og_las, 
+                          xgb_mod   = og_xgb2, 
+                          ymax      = 1, 
+                          bias_cols = bias_cols )
+fg_pr2; og_pr2; og_pr2/fg_pr2
+
+# PR curves: REMOVE gene-level covariates
+plot_pr( model=og_glm,  test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+plot_pr( model=og_xgb1, test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+
+# PR curves: KEEP gene-level covariates
+plot_pr( model=og_glm,  test_df=te, bias_cols=bias_cols )
+plot_pr( model=og_xgb2, test_df=te, bias_cols=bias_cols )
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Basic model + GLCs
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   Model selection
+#-------------------------------------------------------------------------------
+
+# Hard-coded list of features from the final "reduced model"
+sg_cols0 <- c( "causal",
+               "pops_glo", "pops_rel",
+               "dist_gene_rel",
+               "magma_rel",
+               "coding_rel", 
+               "prior_n_genes_locus",
+               "pLI_lt_0.1", "ABC_count", "Roadmap_count" )
+# sg_cols0 <- c( "causal",
+#                "pops_glo", "pops_rel",
+#                "dist_tss_bil",
+#                "magma_glo", "magma_rel",
+#                "prior_n_genes_locus",
+#                "pLI", "ABC_count" )
+
+# Manually make models and drop terms that are not Bonferroni-significant
+sg_cols1 <- c( "causal",
+               "pops_glo", "pops_rel",
+               "dist_gene_rel",
+               "magma_rel",
+               "coding_rel", 
+               "prior_n_genes_locus",
+               "pLI_lt_0.1", "ABC_count", "Roadmap_count" )
+
+# Run regression
+sg_form1 <- make_formula( lhs=sg_cols1[1], rhs=sg_cols1[-1] )
+sg_glm1  <- glm( formula=sg_form1, data=tr, family="binomial" )
+
+# Forest plot
+glm_to_forest_p( mod=sg_glm1, xmax=NULL )
+
+
+#-------------------------------------------------------------------------------
+#   GLM
+#-------------------------------------------------------------------------------
+
+# Features
+sg_cols <- c( "causal",
+              "pops_glo", "pops_rel",
+              "dist_gene_rel",
+              "magma_rel",
+              "coding_rel", 
+              "prior_n_genes_locus",
+              "pLI_lt_0.1", "ABC_count", "Roadmap_count" )
+
+# Raw feature correlations
+corrplot( cor( tr[ , ..sg_cols ][,-1] ), order="hclust" )
+
+# Run regression
+sg_form <- make_formula( lhs=sg_cols[1], rhs=sg_cols[-1] )
+sg_glm  <- glm( formula=sg_form, data=tr, family="binomial" )
+
+# Extract deviance explained
+devexp_sg_glm <- dev_exp(sg_glm)
+dev_exp( model=sg_glm, in_sample=TRUE  ) / dev_exp( model=fg_glm, in_sample=TRUE  )
+dev_exp( model=sg_glm, in_sample=FALSE ) / dev_exp( model=fg_glm, in_sample=FALSE )
+dev_exp( model=sg_glm, in_sample=TRUE  ) / dev_exp( model=og_glm, in_sample=TRUE  )
+dev_exp( model=sg_glm, in_sample=FALSE ) / dev_exp( model=og_glm, in_sample=FALSE )
+
+# Forest plot
+glm_to_forest_p( mod=sg_glm, xmax=NULL )
+
+
+#-------------------------------------------------------------------------------
+#   LASSO
+#-------------------------------------------------------------------------------
+
+sg_las <- cv.glmnet( x=as.matrix( tr[ , ..sg_cols ] )[,-1], 
+                     y=tr[["causal"]], family="binomial", standardize=FALSE )
+
+
+#-------------------------------------------------------------------------------
+#   XGBoost
+#-------------------------------------------------------------------------------
+
+# REMOVE gene-level covariates
+sg_xgb1 <- train_xgb( data=tr, feat_cols=sg_cols[-1], maxit=100, 
+                      bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+xgb_to_forest( xgb_mod=sg_xgb1, suffix="", xmax=NULL )
+
+# KEEP gene-level covariates
+sg_xgb2 <- train_xgb( data=tr, feat_cols=sg_cols[-1], maxit=100, 
+                      bias_cols=bias_cols )
+xgb_to_forest( xgb_mod=sg_xgb2, suffix="", xmax=NULL )
+
+
+#-------------------------------------------------------------------------------
+#   Assess performance of the models in the test set
+#-------------------------------------------------------------------------------
+
+# AUPRC: REMOVE gene-level covariates
+sg_pr1 <- auprc_test_set( test_df   = te, 
+                          rand_mod  = rand_mod,
+                          glm_mod   = sg_glm, 
+                          las_mod   = sg_las, 
+                          xgb_mod   = sg_xgb1, 
+                          ymax      = 1, 
+                          bias_cols = bias_cols, 
+                          glc_cols  = glc_cols,
+                          rm_glc    = TRUE )
+fg_pr1; sg_pr1; sg_pr1/fg_pr1
+og_pr1; sg_pr1; sg_pr1/og_pr1
+
+# AUPRC: KEEP gene-level covariates
+sg_pr2 <- auprc_test_set( test_df   = te, 
+                          rand_mod  = rand_mod,
+                          glm_mod   = sg_glm, 
+                          las_mod   = sg_las, 
+                          xgb_mod   = sg_xgb2, 
+                          ymax      = 1, 
+                          bias_cols = bias_cols )
+fg_pr2; sg_pr2; sg_pr2/fg_pr2
+og_pr2; sg_pr2; sg_pr2/og_pr2
+
+# PR curves: REMOVE gene-level covariates
+plot_pr( model=sg_glm,  test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+plot_pr( model=sg_xgb1, test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+
+# PR curves: KEEP gene-level covariates
+plot_pr( model=sg_glm,  test_df=te, bias_cols=bias_cols )
+plot_pr( model=sg_xgb2, test_df=te, bias_cols=bias_cols )
+
+
+#-------------------------------------------------------------------------------
+#   LOTO
+#-------------------------------------------------------------------------------
+
+pattern <- "^causal$|^pops_|^dist_gene_|^magma_|^coding_|^prior"
+feat_cols <- grep( pattern=pattern, x=f_cols, value=TRUE )
+feat_cols <- c( feat_cols, bias_cols, glc_cols )
+sg_loto <- loto( data=tr, feat_cols=feat_cols, backwards_selection=TRUE, 
+                 bias_cols=bias_cols )
+plot_loto_pr( loto_obj = fg_loto )
+plot_loto_pr( loto_obj = sg_loto )
 
 
 #-------------------------------------------------------------------------------
@@ -2099,8 +2483,8 @@ plot_pr( model=s_xgb2, test_df=te, p=0.78, r=0.34, v=0.75, avg_prot_att=FALSE )
 #-------------------------------------------------------------------------------
 
 # Get model predictions, plus several re-calibrations
-adj_data_tr <- recalibrate_preds( test_df=tr, model=s_glm, avg_prot_att=FALSE )
-adj_data_te <- recalibrate_preds( test_df=te, model=s_glm, avg_prot_att=FALSE )
+adj_data_tr <- recalibrate_preds( test_df=tr, model=s_glm, bias_cols=bias_cols )
+adj_data_te <- recalibrate_preds( test_df=te, model=s_glm, bias_cols=bias_cols )
 
 # Train a LASSO model to meta-re-calibrate model outputs
 adj_mod <- recalibration_model( data=adj_data_tr )
@@ -2155,11 +2539,6 @@ plot( modeled, las=1, scale.color=viridis(n=16, begin=0.3, end=1 ) )
 #-------------------------------------------------------------------------------
 #   Calibration plots
 #-------------------------------------------------------------------------------
-
-# Load libraries
-library(tidymodels)
-library(probably)
-library(cowplot)
 
 # Calibration plots: original
 p1 <- cal_plot_logistic( .data=adj_data_tr, truth=causal, estimate=original ) +
@@ -2226,7 +2605,7 @@ poly_lrt( variable="coding_glo_poly2" )
 poly_lrt( variable="coding_rel_poly2" )
 
 # "Basic" list of selected faeatures
-qcols <- c( scols, "pops_glo_poly2" )
+qcols <- c( s_cols, "pops_glo_poly2" )
 
 # Raw feature correlations
 corrplot( cor( tr[ , ..qcols ][,-1] ), order="hclust" )
@@ -2248,8 +2627,8 @@ glm_to_forest_p( mod=q_glm )
 #-------------------------------------------------------------------------------
 
 # Add all possible interactions
-i_form0 <- make_formula( lhs=scols[1], 
-                         rhs=c( setdiff( scols[-1], cov_cols ), 
+i_form0 <- make_formula( lhs=s_cols[1], 
+                         rhs=c( setdiff( s_cols[-1], cov_cols ), 
                                 "prior_n_genes_locus" ) )
 i_form0 <- update( i_form0, ~ (.)^2 )
 i_form0 <- update( i_form0, ~ . + prot_att_poly2 + prot_att_miss + 
@@ -2261,12 +2640,12 @@ i_glm0 <- glm( formula=i_form0, data=tr, family="binomial" )
 i_glm1 <- stats::step( object=i_glm0, k=qchisq( 1-0.05/10, df=1 ) )
 
 # Hard-coded list of features that passed model selection
-# icols1 <- c( scols,
+# icols1 <- c( s_cols,
 #             "pops_rel:prior_n_genes_locus",
 #             "dist_gene_rel:coding_glo" )
 
 # Manually make models and drop terms that are not Bonferroni-significant
-icols <- c( scols, 
+icols <- c( s_cols, 
             "pops_rel:prior_n_genes_locus" )
 
 # Run regression

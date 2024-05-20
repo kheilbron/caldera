@@ -52,51 +52,25 @@ maindir <- "~/projects/causal_genes/"
 suppressPackageStartupMessages( library(data.table) )
 suppressPackageStartupMessages( library(dplyr) )
 
+# Read in gencode gene boundaries
+gencode  <- fread("~/projects/causal_genes/gene_locations.tsv")
+
 # Read in causal/non-causal trait-gene pairs
 cnc_file <- file.path( maindir, "causal_noncausal_trait_gene_pairs", 
                        "causal_noncausal_trait_gene_pairs_300kb.tsv" )
 cnc <- fread(cnc_file)
 
 # Read in V2G
-vg_file1 <- file.path( maindir, "UKB_AllMethods_GenePrioritization.txt.gz" )
-vg1 <- fread(vg_file1)
-vg1 <- vg1[ order( vg1$trait, vg1$region, vg1$cs_id, vg1$ensgid ) , ]
-
-# Read in extended V2G (MAGMA and SMR)
-# One row per credible set variant. We extract gene-level results for the top variant.
-vg_file2 <- file.path( maindir, "PoPS_UKBB_noncoding_validation_1348CSs_v2.txt.gz" )
-vg2 <- fread(vg_file2)
-vg2 <- vg2[ order( vg2$trait, vg2$region, vg2$cs_id, vg2$ensgid, -vg2$pip ) , ]
-idx <- duplicated( vg2[ , c( "trait", "region", "cs_id", "ensgid" ) ] )
-vg2 <- vg2[ !idx , ]
-gcols_vg2 <- c( "trait", "region", "cs_id", "ensgid", "smr_p", "smr_rank", 
-                 "magma_score", "magma_rank" )
-
-# Read in DEPICT and NetWAS V2G
-vg_file3 <- file.path( maindir, "netwas_depict.txt.gz" )
-vg3 <- fread(vg_file3)
-vg3 <- vg3[ !grepl( pattern="^PASS_", x=vg3$trait ) , ]
-names(vg3)[ names(vg3) == "ENSGID" ] <- "ensgid"
-vg3$trait <- sub( pattern="^UKB_", replacement="", x=vg3$trait )
-
-# Merge
-j1 <- left_join( x=vg1, y=vg2[,..gcols_vg2] )
-j2 <- left_join( x=j1, y=vg3 )
-
-# Remove genes >300kb from the lead variant
-j3 <- j2[ j2$distance_genebody < 300e3 , ]
-NROW(vg1); NROW(vg2); NROW(vg3)
-NROW(j1); NROW(j3) 
+vg_file <- file.path( maindir, "v2g_file.tsv" )
+vg <- fread(vg_file)
 
 # Subset both to shared trait-ENSGID-CS triplets (TECs)
 # Note: yields about half as many missed causal/non-causal TGPs than using gene
-# Note: that match() will only select the first instance for the small...
-# ...number of cases where there are multiple ENSGIDs per gene
-tec_cnc <- paste( cnc$trait,  cnc$ensgid,  cnc$cs_id,  sep="_" )
-tec_vg <- paste( j3$trait, j3$ensgid, j3$cs_id, sep="_" )
+tec_cnc <- paste( cnc$trait, cnc$ensgid, cnc$cs_id, sep="_" )
+tec_vg  <- paste( vg$trait,  vg$ensgid,  vg$cs_id,  sep="_" )
 tec_shared <- intersect( tec_cnc, tec_vg )
-cnc2 <- cnc[  match( tec_shared, tec_cnc ) , ]
-j4 <- j3[ match( tec_shared, tec_vg ) , ]
+cnc2 <- cnc[ match( tec_shared, tec_cnc ) , ]
+vg2  <- vg[  match( tec_shared, tec_vg ) , ]
 
 # Explore: What percentage of triplets were shared?
 length(tec_shared) /  length(tec_cnc) #93% are found in the causal gene dataset
@@ -117,8 +91,8 @@ gcols_vg <- c( "trait", "gene", "ensgid", "region", "cs_id", "chromosome",
                "full_loco_netwas_score", "full_loco_netwas_bon_score",
                "no_loco_nc_netwas_score", "no_loco_nc_netwas_bon_score", 
                "no_loco_nc_depict_p", "full_loco_depict_p" )
-gcols_cnc <- c( "n_cs_in_region", "n_cs_snps", "cs_width", "ngenes_nearby" )
-m <- cbind( causal=cnc2$causal, j4[ , ..gcols_vg ], cnc2[ , ..gcols_cnc ] )
+gcols_cnc <- c( "n_cs_snps", "cs_width", "ngenes_nearby" )
+m <- cbind( causal=cnc2$causal, vg2[ , ..gcols_vg ], cnc2[ , ..gcols_cnc ] )
 
 # Add a column for the number of genes in the locus
 m$prior_n_genes_locus <- logit10( 1/m$ngenes_nearby )
@@ -134,11 +108,11 @@ m$pops_glo <- m$pops_score
 
 # Distance to gene body 
 m$dist_gene_raw_l2g <- log( m$distance_genebody + 1 )
-m$dist_gene_glo     <- log10( m$distance_genebody + 1e3 )
+m$dist_gene_glo     <- -log10( m$distance_genebody + 1e3 )
 
 # Distance to TSS
 m$dist_tss_raw_l2g  <- log( m$distance_tss + 1 )
-m$dist_tss_glo      <- log10( m$distance_tss + 1e3 )
+m$dist_tss_glo      <- -log10( m$distance_tss + 1e3 )
 
 # TWAS
 m$twas_p <- ifelse( m$twas_p == 0, .Machine$double.xmin, m$twas_p )
@@ -222,8 +196,8 @@ for( i in unique(tcp_m) ){
   
   # Compute L2G-like values
   pops_vals     <- sub$pops_glo             - max(sub$pops_glo)
-  gene_vals     <- log10( sub$distance_genebody - min(sub$distance_genebody) + 1e3 )
-  tss_vals      <- log10( sub$distance_tss      - min(sub$distance_tss) + 1e3 )
+  gene_vals     <- -log10( sub$distance_genebody - min(sub$distance_genebody) + 1e3 )
+  tss_vals      <- -log10( sub$distance_tss      - min(sub$distance_tss) + 1e3 )
   twas_vals     <- sub$twas_glo             - max(sub$twas_glo)
   liu_vals      <- sub$corr_liu_glo         - max(sub$corr_liu_glo)
   and_vals      <- sub$corr_and_glo         - max(sub$corr_and_glo)
@@ -461,6 +435,77 @@ names(mo)[ names(mo) == "GeneSymbol" ] <- "ensgid"
 mo$gene <- NULL
 m5 <- left_join( x=m4, y=mo, by="ensgid" )
 
+# Missingness
+m5$pritchard_miss <- ifelse( is.na(m5$length), 1, 0 )
+
+# Gene length
+m5$length[ m5$pritchard_miss == 1 ] <- min( m5$length, na.rm=TRUE )
+m5$gene_bp_log10 <- log10( m5$length*1e3 )
+
+# CDS length
+m5$CDS_length[ m5$pritchard_miss == 1 ] <- min( m5$CDS_length, na.rm=TRUE )
+m5$cds_bp_log10 <- log10( m5$CDS_length*1e3 )
+
+# pLI
+m5$pLI[ is.na(m5$pLI) ] <- 0.5
+m5$pLI[ m5$pLI == 1 ] <- max( m5$pLI[ m5$pLI < 1 ])
+m5$pLI_gt_0.9 <- ifelse( m5$pLI > 0.9, 1, 0 )
+m5$pLI_lt_0.1 <- ifelse( m5$pLI < 0.1, 1, 0 )
+m5$pLI_log10OR <- logit10(m5$pLI)
+m5$pLI_log10OR <- ifelse( m5$pLI_log10OR < -20, -20, m5$pLI_log10OR )
+m5$pLI_log10OR_pos <- ifelse( m5$pLI_log10OR < 0, 0, m5$pLI_log10OR )
+m5$pLI_log10OR_neg <- ifelse( m5$pLI_log10OR > 0, 0, m5$pLI_log10OR )
+
+# LOEUF
+m5$LOEUF[ is.na(m5$LOEUF) ] <- 0
+
+# ABC_count
+m5$ABC_count[ m5$pritchard_miss == 1 ] <- min( m5$ABC_count, na.rm=TRUE )
+
+# ABC_length_per_type
+m5$ABC_length_per_type[ m5$pritchard_miss == 1 ] <- min( m5$ABC_length_per_type, na.rm=TRUE )
+m5$abc_bp_log10 <- ifelse( m5$ABC_length_per_type == 0, 
+                           log10( 0.2 * 1e3 ),
+                           log10( m5$ABC_length_per_type * 1e3 ) )
+
+# Roadmap_count
+m5$Roadmap_count[ m5$pritchard_miss == 1 ] <- min( m5$Roadmap_count, na.rm=TRUE )
+
+# Roadmap_length_per_type
+m5$Roadmap_length_per_type[ m5$pritchard_miss == 1 ] <- min( m5$Roadmap_length_per_type, na.rm=TRUE )
+m5$roadmap_bp_log10 <- ifelse( m5$Roadmap_length_per_type == 0, 
+                               log10( 0.2 * 1e3 ),
+                               log10( m5$Roadmap_length_per_type * 1e3 ) )
+
+# promoter_count
+m5$promoter_count[ m5$pritchard_miss == 1 ] <- min( m5$promoter_count, na.rm=TRUE )
+m5$promoter_count_log10 <- log10( m5$promoter_count + 1 )
+
+# connect_decile
+m5$connect_decile[ m5$pritchard_miss == 1 ] <- min( m5$connect_decile, na.rm=TRUE )
+
+# connect_quantile
+m5$connect_quantile[ m5$pritchard_miss == 1 ] <- min( m5$connect_quantile, na.rm=TRUE )
+
+# connectedness
+m5$connectedness[ m5$pritchard_miss == 1 ] <- min( m5$connectedness, na.rm=TRUE )
+
+# PPI_degree_decile
+m5$PPI_degree_decile[ m5$pritchard_miss == 1 ] <- min( m5$PPI_degree_decile, na.rm=TRUE )
+
+# PPI_degree_quantile
+m5$PPI_degree_quantile[ m5$pritchard_miss == 1 ] <- min( m5$PPI_degree_quantile, na.rm=TRUE )
+
+# PPI_degree_cat
+m5$PPI_degree_cat[ m5$pritchard_miss == 1 ] <- min( m5$PPI_degree_cat, na.rm=TRUE )
+
+# TF
+m5$TF[ m5$pritchard_miss == 1 ] <- min( m5$TF, na.rm=TRUE )
+
+# hs
+m5$hs[ is.na(m5$hs) ] <- max( m5$hs, na.rm=TRUE )
+m5$hs_log10 <- ifelse( m5$hs < 1e-5, log10(1e-5), log10(m5$hs) )
+
 
 #-------------------------------------------------------------------------------
 #   Write to file
@@ -475,6 +520,23 @@ fwrite( x=m5, file=merged_outfile, sep="\t" )
 #-------------------------------------------------------------------------------
 #   Done
 #-------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
