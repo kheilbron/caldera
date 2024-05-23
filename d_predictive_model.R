@@ -1044,437 +1044,23 @@ rand_mod <- glm( causal ~ rand, data=tr, family="binomial" )
 
 
 #-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   POPS + local
-#///////////////////////////////////////////////////////////////////////////////
+#   Define feature vectors
 #-------------------------------------------------------------------------------
 
-# Run a naive regression using published best-in-locus
-lcols <- c( "causal", "pops_and_local" )
-
-# Run regression
-l_form <- make_formula( lhs=lcols[1], rhs=lcols[-1] )
-l_glm  <- glm( formula=l_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_l_glm <- ( l_glm$null.deviance - l_glm$deviance ) / l_glm$null.deviance
-
-# Forest plot
-glm_to_forest(l_glm)
-
-# Precision and recall: training
-sum( tr$causal & tr$pops_and_local ) / sum( tr$pops_and_local ) #precision
-sum( tr$causal & tr$pops_and_local ) / sum( tr$causal )         #recall
-
-# Precision and recall: test
-sum( te$causal & te$pops_and_local ) / sum( te$pops_and_local ) #precision
-sum( te$causal & te$pops_and_local ) / sum( te$causal )         #recall
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Published best-in-locus
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-# Run a naive regression using published best-in-locus
-p_cols <- c( "causal", "pops_bil", "dist_gene_bil", "magma_bil", "twas_bil", 
-            "clpp_bil", "abc_bil", "corr_any_bil", "pchic_any_bil", "smr_bil" )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..p_cols ][,-1] ), order="hclust" )
-
-# Run regression
-p_form <- make_formula( lhs=p_cols[1], rhs=p_cols[-1] )
-p_glm  <- glm( formula=p_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_p_glm <- dev_exp(p_glm)
-
-# Forest plot
-glm_to_forest(p_glm)
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   All best-in-locus (only)
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-# Run a naive regression using published best-in-locus
+# Best-in-locus features
 a_cols <- c( "causal", 
-            "pops_bil", 
-            "dist_gene_bil", "dist_tss_bil",
-            "magma_bil",
-            "coding_bil",
-            "twas_bil", 
-            "corr_liu_bil", "corr_and_bil", "corr_uli_bil",
-            "pchic_jung_bil", "pchic_jav_bil", 
-            "clpp_bil", 
-            "smr_bil",
-            "abc_bil",
-            "depict_z_bil",
-            "netwas_score_bil", "netwas_bon_score_bil" )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..a_cols ][,-1] ), order="hclust" )
-
-# Run regression
-a_form <- make_formula( lhs=a_cols[1], rhs=a_cols[-1] )
-a_glm  <- glm( formula=a_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_a_glm <- dev_exp(a_glm)
-
-# Forest plot
-glm_to_forest_p( mod=a_glm, suffix="_bilTRUE" )
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Global-only
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   Feature engineering: compare definitions, find linear relationships
-#-------------------------------------------------------------------------------
-
-# Plot relationship: distance to gene body
-plot_logOR_relationship_smooth( data=tr, varname="distance_genebody" )
-plot_logOR_relationship_smooth( data=tr[ tr$distance_genebody > 0 ], 
-                                varname="distance_genebody" )
-plot_logOR_relationship_smooth( data=tr, varname="dist_gene_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr, varname="dist_gene_glo" )
-
-# Plot relationship: distance to TSS
-plot_logOR_relationship_smooth( data=tr, varname="distance_tss" )
-plot_logOR_relationship_smooth( data=tr, varname="dist_tss_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr, varname="dist_tss_glo" )
-
-# Plot relationship: POPS
-plot_logOR_relationship_smooth( data=tr, varname="pops_glo" )
-
-# Plot relationship: TWAS
-plot_logOR_relationship_smooth( data=tr, varname="twas_logp_glo" )
-plot_logOR_relationship_smooth( data=tr, varname="twas_glo" )
-
-# Plot relationship: E-P Liu
-plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_raw_l2g > 0 , ], 
-                                varname="corr_liu_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr, varname="corr_liu_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_glo > 0 , ], 
-                                varname="corr_liu_glo" )
-plot_logOR_relationship_smooth( data=tr, varname="corr_liu_glo" )
-
-# Plot relationship: E-P Andersson
-plot_logOR_relationship_smooth( data=tr[ tr$corr_and_glo > 0 , ], 
-                                varname="corr_and_glo" )
-plot_logOR_relationship_smooth( data=tr, varname="corr_and_glo" )
-
-# Plot relationship: E-P Ulirsch
-plot_logOR_relationship_smooth( data=tr[ tr$corr_uli_glo > 0 , ], 
-                                varname="corr_uli_glo" )
-plot_logOR_relationship_smooth( data=tr, varname="corr_uli_glo" )
-
-# Plot relationship: PCHi-C Jung
-plot_logOR_relationship_smooth( data=tr[ tr$pchic_jung_glo > 0 , ], 
-                                varname="pchic_jung_glo" )
-plot_logOR_relationship_smooth( data=tr, varname="pchic_jung_glo" )
-
-# Plot relationship: PCHi-C Javierre
-plot_logOR_relationship_smooth( data=tr[ tr$pchic_jav_glo > 0 , ], 
-                                varname="pchic_jav_glo" )
-plot_logOR_relationship_smooth( data=tr, varname="pchic_jav_glo" )
-
-# Plot relationship: CLPP
-plot_logOR_relationship_smooth( data=tr[ tr$clpp_raw_l2g > 0 , ], 
-                                varname="clpp_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr, varname="clpp_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr[ tr$clpp_glo > log10(0.0001) , ], 
-                                varname="clpp_glo" )
-plot_logOR_relationship_smooth( data=tr, varname="clpp_glo" )
-
-# Plot relationship: ABC
-plot_logOR_relationship_smooth( data=tr[ tr$abc_raw_l2g > 0 , ], 
-                                varname="abc_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr, varname="abc_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr[ tr$abc_raw_l2g > 0 , ], 
-                                varname="abc_glo" )
-plot_logOR_relationship_smooth( data=tr, varname="abc_glo" )
-
-# Plot relationship: MAGMA
-plot_logOR_relationship_smooth( data=tr, varname="magma_glo" )
-plot_logOR_relationship_smooth( data=tr[ tr$magma_glo != median(tr$magma_glo) , ], 
-                                varname="magma_glo" )
-
-# Plot relationship: SMR
-plot_logOR_relationship_smooth( data=tr, varname="smr_glo" )
-plot_logOR_relationship_smooth( data=tr[ tr$smr_glo != median(tr$smr_glo) , ], 
-                                varname="smr_glo" )
-
-# Plot relationship: coding
-plot_logOR_relationship_smooth( data=tr, varname="coding_glo" )
-plot_logOR_relationship_smooth( data=tr[ tr$coding_glo != -3 , ], 
-                                varname="coding_glo" )
-
-# DEPICT and NetWAS
-plot_logOR_relationship_smooth( data=tr, varname="depict_z_glo" )
-plot_logOR_relationship_smooth( data=tr, varname="netwas_score_glo" )
-plot_logOR_relationship_smooth( data=tr, varname="netwas_bon_score_glo" )
-
-
-#-------------------------------------------------------------------------------
-#   Compare competing feature definitions
-#-------------------------------------------------------------------------------
-
-# Distance to gene body
-mod1 <- glm( causal ~ distance_genebody, data=tr, family="binomial" )
-mod2 <- glm( causal ~ dist_gene_raw_l2g, data=tr, family="binomial" )
-mod3 <- glm( causal ~ dist_gene_glo, data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-dev_exp(mod3)
-summary(mod1)$coef
-summary(mod2)$coef
-summary(mod3)$coef
-
-# Distance to TSS
-mod1 <- glm( causal ~ distance_tss,     data=tr, family="binomial" )
-mod2 <- glm( causal ~ dist_tss_raw_l2g, data=tr, family="binomial" )
-mod3 <- glm( causal ~ dist_tss_glo, data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-dev_exp(mod3)
-summary(mod1)$coef
-summary(mod2)$coef
-summary(mod3)$coef
-
-# Number of genes in the locus
-mod1 <- glm( causal ~ ngenes_nearby,       data=tr, family="binomial" )
-mod2 <- glm( causal ~ prior_n_genes_locus, data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-summary(mod1)$coef
-summary(mod2)$coef
-
-# TWAS
-mod1 <- glm( causal ~ twas_logp_glo,  data=tr, family="binomial" )
-mod2 <- glm( causal ~ twas_glo,  data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-summary(mod1)$coef
-summary(mod2)$coef
-
-# Plot relationship: E-P Liu
-mod1 <- glm( causal ~ corr_liu_raw_l2g,  data=tr, family="binomial" )
-mod2 <- glm( causal ~ corr_liu_glo,  data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-summary(mod1)$coef
-summary(mod2)$coef
-
-# CLPP
-mod1 <- glm( causal ~ clpp_raw_l2g,  data=tr, family="binomial" )
-mod2 <- glm( causal ~ clpp_glo,  data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-summary(mod1)$coef
-summary(mod2)$coef
-
-# ABC
-mod1 <- glm( causal ~ abc_raw_l2g,  data=tr, family="binomial" )
-mod2 <- glm( causal ~ abc_glo,  data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-summary(mod1)$coef
-summary(mod2)$coef
-
-# DEPICT and NetWAS
-mod1 <- glm( causal ~ depict_z_glo,         data=tr, family="binomial" )
-mod2 <- glm( causal ~ netwas_score_glo,     data=tr, family="binomial" )
-mod3 <- glm( causal ~ netwas_bon_score_glo, data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-dev_exp(mod3)
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Relative-only
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   Feature engineering: compare with/without best value (captured by BIL features)
-#-------------------------------------------------------------------------------
-
-# Plot relationship: distance to gene body
-plot_logOR_relationship_smooth( data=tr, varname="dist_gene_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$dist_gene_rel != -3 , ], varname="dist_gene_rel" )
-
-# Plot relationship: distance to TSS
-plot_logOR_relationship_smooth( data=tr, varname="dist_tss_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$dist_tss_rel != -3 , ], varname="dist_tss_rel" )
-
-# Plot relationship: POPS
-plot_logOR_relationship_smooth( data=tr, varname="pops_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$pops_rel !=0 , ], varname="pops_rel" )
-
-# Plot relationship: TWAS
-plot_logOR_relationship_smooth( data=tr, varname="twas_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$twas_rel !=0 , ], varname="twas_rel" )
-
-# Plot relationship: E-P Liu
-plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_rel != 0 , ], varname="corr_liu_rel" )
-plot_logOR_relationship_smooth( data=tr, varname="corr_liu_rel" )
-
-# Plot relationship: E-P Andersson
-plot_logOR_relationship_smooth( data=tr[ tr$corr_and_rel != 0 , ], varname="corr_and_rel" )
-plot_logOR_relationship_smooth( data=tr, varname="corr_and_rel" )
-
-# Plot relationship: E-P Ulirsch
-plot_logOR_relationship_smooth( data=tr[ tr$corr_uli_rel != 0 , ], varname="corr_uli_rel" )
-plot_logOR_relationship_smooth( data=tr, varname="corr_uli_rel" )
-
-# Plot relationship: PCHi-C Jung
-plot_logOR_relationship_smooth( data=tr[ tr$pchic_jung_rel != 0 , ], varname="pchic_jung_rel" )
-plot_logOR_relationship_smooth( data=tr, varname="pchic_jung_rel" )
-
-# Plot relationship: PCHi-C Javierre
-plot_logOR_relationship_smooth( data=tr[ tr$pchic_jav_rel != 0 , ], varname="pchic_jav_rel" )
-plot_logOR_relationship_smooth( data=tr, varname="pchic_jav_rel" )
-
-# Plot relationship: CLPP
-plot_logOR_relationship_smooth( data=tr[ tr$clpp_rel != 0 , ], varname="clpp_rel" )
-plot_logOR_relationship_smooth( data=tr, varname="clpp_rel" )
-
-# Plot relationship: ABC
-plot_logOR_relationship_smooth( data=tr[ tr$abc_rel != 0 , ], varname="abc_rel" )
-plot_logOR_relationship_smooth( data=tr, varname="abc_rel" )
-
-# Plot relationship: MAGMA
-plot_logOR_relationship_smooth( data=tr, varname="magma_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$magma_rel != 0 , ], varname="magma_rel" )
-
-# Plot relationship: SMR
-plot_logOR_relationship_smooth( data=tr, varname="smr_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$smr_rel != 0 , ], varname="smr_rel" )
-
-# Plot relationship: coding
-plot_logOR_relationship_smooth( data=tr, varname="coding_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$coding_rel != 0 , ], varname="coding_rel" )
-
-# Plot relationship: DEPICT
-plot_logOR_relationship_smooth( data=tr, varname="depict_z_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$depict_z_rel != 0 , ], varname="depict_z_rel" )
-
-# Plot relationship: NetWAS
-plot_logOR_relationship_smooth( data=tr, varname="netwas_score_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$netwas_score_rel != 0 , ], varname="netwas_score_rel" )
-plot_logOR_relationship_smooth( data=tr, varname="netwas_bon_score_rel" )
-plot_logOR_relationship_smooth( data=tr[ tr$netwas_bon_score_rel != 0 , ], varname="netwas_bon_score_rel" )
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   For each V2G method, compare BIL, global, and relative features
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-# Plot deviance explained by all univariate methods
-all_de0 <- list()
-all_cols <- unique( c( a_cols, glo_cols, rel_cols, cov_cols ) )[-1]
-for( i in all_cols ){
-  form <- paste0( "causal ~ ", i )
-  mod  <- glm( as.formula(form), data=tr, family="binomial" )
-  all_de0[[i]] <- c( ( mod$null.deviance - mod$deviance ) / mod$null.deviance )
-}
-all_de <- unlist(all_de0)
-par( mar=c(9,4,1,1) )
-barplot( sort( all_de[ all_de > 0.04 ], decreasing=TRUE ), las=2)
-par( mar=c(5,5,1,1) )
-
-# POPS
-v2g_devexp( data=tr, prefix="pops" )
-v2g_cor( data=tr, prefix="pops" )
-corrplot( v2g_cor( data=tr, prefix="pops" ) )
-
-# Distance: gene
-v2g_devexp( data=tr, prefix="dist_gene" )
-v2g_cor( data=tr, prefix="dist_gene" )
-corrplot( v2g_cor( data=tr, prefix="dist_gene" ) )
-
-# Distance: TSS
-v2g_devexp( data=tr, prefix="dist_tss" )
-v2g_cor( data=tr, prefix="dist_tss" )
-corrplot( v2g_cor( data=tr, prefix="dist_tss" ) )
-
-# TWAS
-v2g_devexp( data=tr, prefix="twas" )
-v2g_cor( data=tr, prefix="twas" )
-corrplot( v2g_cor( data=tr, prefix="twas" ) )
-
-# MAGMA
-v2g_devexp( data=tr, prefix="magma" )
-v2g_cor( data=tr, prefix="magma" )
-corrplot( v2g_cor( data=tr, prefix="magma" ) )
-
-# SMR
-v2g_devexp( data=tr, prefix="smr" )
-v2g_cor( data=tr, prefix="smr" )
-corrplot( v2g_cor( data=tr, prefix="smr" ) )
-
-# Coding
-v2g_devexp( data=tr, prefix="coding" )
-v2g_cor( data=tr, prefix="coding" )
-corrplot( v2g_cor( data=tr, prefix="coding" ) )
-
-# Liu
-v2g_devexp( data=tr, prefix="corr_liu" )
-v2g_cor( data=tr, prefix="corr_liu" )
-corrplot( v2g_cor( data=tr, prefix="corr_liu" ) )
-
-# Andersson
-v2g_devexp( data=tr, prefix="corr_and" )
-v2g_cor( data=tr, prefix="corr_and" )
-corrplot( v2g_cor( data=tr, prefix="corr_and" ) )
-
-# Ulirsch
-v2g_devexp( data=tr, prefix="corr_uli" )
-v2g_cor( data=tr, prefix="corr_uli" )
-corrplot( v2g_cor( data=tr, prefix="corr_uli" ) )
-
-# Jung
-v2g_devexp( data=tr, prefix="pchic_jung" )
-v2g_cor( data=tr, prefix="pchic_jung" )
-corrplot( v2g_cor( data=tr, prefix="pchic_jung" ) )
-
-# Javierre
-v2g_devexp( data=tr, prefix="pchic_jav" )
-v2g_cor( data=tr, prefix="pchic_jav" )
-corrplot( v2g_cor( data=tr, prefix="pchic_jav" ) )
-
-# CLPP
-v2g_devexp( data=tr, prefix="clpp" )
-v2g_cor( data=tr, prefix="clpp" )
-corrplot( v2g_cor( data=tr, prefix="clpp" ) )
-
-# ABC
-v2g_devexp( data=tr, prefix="abc" )
-v2g_cor( data=tr, prefix="abc" )
-corrplot( v2g_cor( data=tr, prefix="abc" ) )
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Full model: best-in-locus + global + relative
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   LOTO
-#-------------------------------------------------------------------------------
+             "pops_bil", 
+             "dist_gene_bil", "dist_tss_bil",
+             "magma_bil",
+             "coding_bil",
+             "twas_bil", 
+             "corr_liu_bil", "corr_and_bil", "corr_uli_bil",
+             "pchic_jung_bil", "pchic_jav_bil", 
+             "clpp_bil", 
+             "smr_bil",
+             "abc_bil",
+             "depict_z_bil",
+             "netwas_score_bil", "netwas_bon_score_bil" )
 
 # Global features
 glo_cols <- c( "causal", "pops_glo", 
@@ -1495,8 +1081,43 @@ rel_cols <- c( "causal", "pops_rel", "dist_gene_rel", "dist_tss_rel",
                "clpp_rel", "smr_rel", "abc_rel",
                "depict_z_rel", "netwas_score_rel", "netwas_bon_score_rel" )
 
-# Run a naive regression using published best-in-locus
+# Features that may capture bias in how causal genes were selected
+bias_cols <- c( "rvis4",           "rvis_miss",
+                "pLI_log10OR_neg", "pLI_lt_0.1",
+                "LOEUF",           "hs_log10",
+                "gene_bp_log10",   "cds_bp_log10",
+                "pritchard_miss" )
+
+# Gene-level features
+glc_cols  <- c( "prot_att",             "prot_att_miss", 
+                "pLI_log10OR_pos",      "pLI_gt_0.9",
+                "ABC_count",            "abc_bp_log10",
+                "Roadmap_count",        "roadmap_bp_log10",
+                "promoter_count_log10",
+                "TF",
+                "connect_decile",       "connectedness",
+                "PPI_degree_decile",    "PPI_degree_cat" )
+
+# Full feature set
 f_cols <- unique( c( a_cols, glo_cols, rel_cols, "prior_n_genes_locus" ) )
+
+# Basic feature set
+pattern <- "^causal$|^pops_|^dist_gene_|^magma_|^coding_|^prior"
+s_cols  <- grep( pattern=pattern, x=f_cols, value=TRUE )
+
+# Basic + GLC feature set
+sg_cols <- c( s_cols, bias_cols, glc_cols )
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Full model: best-in-locus + global + relative
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   LOTO
+#-------------------------------------------------------------------------------
 
 # Raw feature correlations
 corrplot( cor( tr[ , ..f_cols ][,-1] ), order="hclust" )
@@ -1537,53 +1158,12 @@ for( i in seq_along(bp) ){
 
 
 #-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# Run regression
-f_form <- make_formula( lhs=f_cols[1], rhs=f_cols[-1] )
-f_glm  <- glm( formula=f_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_f_glm <- dev_exp(f_glm)
-
-
-#-------------------------------------------------------------------------------
 #   LASSO
 #-------------------------------------------------------------------------------
 
 # Make LASSO model
 f_las <- cv.glmnet( x=as.matrix( tr[ , ..f_cols ] )[,-1], 
                     y=tr[["causal"]], family="binomial", standardize=FALSE )
-
-
-#-------------------------------------------------------------------------------
-#   XGBoost
-#-------------------------------------------------------------------------------
-
-# Run
-t0 <- proc.time()
-f_xgb <- train_xgb( data=tr, feat_cols=f_cols[-1], maxit=100 )
-plot_fi(f_xgb)
-t1 <- proc.time()
-t1-t0
-
-
-#-------------------------------------------------------------------------------
-#   Assess performance of the models in the test set
-#-------------------------------------------------------------------------------
-
-# AUPRC
-f_pr <- auprc_test_set( test_df  = te, 
-                        rand_mod = rand_mod,
-                        glm_mod  = f_glm, 
-                        las_mod  = f_las, 
-                        xgb_mod  = f_xgb, 
-                        ymax     = 1 )
-
-# PR curves
-plot_pr( model=f_glm, test_df=te )
-plot_pr( model=f_xgb, test_df=te )
 
 
 #-------------------------------------------------------------------------------
@@ -1597,8 +1177,6 @@ plot_pr( model=f_xgb, test_df=te )
 #-------------------------------------------------------------------------------
 
 # Raw feature correlations
-pattern <- "^causal$|^pops_|^dist_gene_|^magma_|^coding_|^prior"
-s_cols  <- grep( pattern=pattern, x=f_cols, value=TRUE )
 corrplot( cor( tr[ , ..s_cols ][,-1] ), order="hclust" )
 
 # Run
@@ -1637,412 +1215,12 @@ for( i in seq_along(bp) ){
 
 
 #-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# Run regression
-s_form <- make_formula( lhs=s_cols[1], rhs=s_cols[-1] )
-s_glm0 <- glm( formula=s_form, data=tr, family="binomial" )
-s_glm  <- stats::step( object=s_glm0, k=qchisq( 1-0.05/5, df=1 ), trace=0 )
-
-# Extract deviance explained
-dev_exp( model=s_glm, in_sample=TRUE  ) / dev_exp( model=f_glm, in_sample=TRUE )
-dev_exp( model=s_glm, in_sample=FALSE ) / dev_exp( model=f_glm, in_sample=FALSE )
-
-# Forest plot
-glm_to_forest_p( mod=s_glm, xmax=NULL )
-
-
-#-------------------------------------------------------------------------------
 #   LASSO
 #-------------------------------------------------------------------------------
 
 # Make LASSO model
 s_las <- cv.glmnet( x=as.matrix( tr[ , ..s_cols ] )[,-1], 
                     y=tr[["causal"]], family="binomial", standardize=FALSE )
-
-
-#-------------------------------------------------------------------------------
-#   XGBoost
-#-------------------------------------------------------------------------------
-
-s_xgb <- train_xgb( data=tr, feat_cols=s_cols[-1], maxit=100 )
-xgb_to_forest( xgb_mod=s_xgb, suffix="", xmax=NULL )
-plot_fi(s_xgb)
-
-
-#-------------------------------------------------------------------------------
-#   Assess performance of the models in the test set
-#-------------------------------------------------------------------------------
-
-# AUPRC
-s_pr <- auprc_test_set( test_df  = te, 
-                         rand_mod = rand_mod,
-                         glm_mod  = s_glm, 
-                         las_mod  = s_las, 
-                         xgb_mod  = s_xgb, 
-                         ymax     = 1 )
-f_pr; s_pr; s_pr/f_pr
-
-# PR curves
-plot_pr( model=s_glm, test_df=te )
-plot_pr( model=s_xgb, test_df=te )
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Gene-level covariates (GLCs)
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   Feature engineering: number of nearby genes
-#-------------------------------------------------------------------------------
-
-# Number of genes in the locus
-plot_logOR_relationship_smooth( data=tr, varname="prior_n_genes_locus" )
-plot_logOR_relationship_smooth( data=tr, varname="ngenes_nearby" )
-
-
-#-------------------------------------------------------------------------------
-#   Feature engineering: bias features
-#-------------------------------------------------------------------------------
-
-# RVIS, truncated
-plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis" )
-plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis4" )
-plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis4_poly2" )
-plot_logOR_relationship_smooth( data=tr, varname="rvis4" )
-
-# RVIS: What is the optimal value to impute NAs to?
-mod <- glm( causal ~ rvis4 + rvis4_poly2, 
-            data=tr[ tr$rvis_miss == 0 , ], family="binomial" )
-quad_miss_imp( data=tr, model=mod, miss_var="rvis_miss" )
-
-# pLI
-plot_logOR_relationship_smooth( data=tr, varname="pLI" )
-plot_logOR_relationship_smooth( data=tr, varname="pLI_log10OR" )
-plot_logOR_relationship_smooth( data=tr[ tr$pLI_log10OR_pos > 0 , ], varname="pLI_log10OR_pos" )
-plot_logOR_relationship_smooth( data=tr[ tr$pLI_log10OR_neg < 0 , ], varname="pLI_log10OR_neg" )
-
-# LOEUF
-plot_logOR_relationship_smooth( data=tr, varname="LOEUF" )
-
-# hs
-plot_logOR_relationship_smooth( data=tr, varname="hs" )
-plot_logOR_relationship_smooth( data=tr, varname="hs_log10" )
-
-# Gene length
-plot_logOR_relationship_smooth( data=tr, varname="length" )
-plot_logOR_relationship_smooth( data=tr, varname="gene_bp_log10" )
-
-# CDS length
-plot_logOR_relationship_smooth( data=tr, varname="CDS_length" )
-plot_logOR_relationship_smooth( data=tr, varname="cds_bp_log10" )
-
-
-#-------------------------------------------------------------------------------
-#   Feature engineering: GLCs
-#-------------------------------------------------------------------------------
-
-# Protein attenuation
-plot_logOR_relationship_smooth( data=tr, varname="prot_att" )
-plot_logOR_relationship_smooth( data=tr[ tr$prot_att_miss == 0 , ], 
-                                varname="prot_att" )
-plot_logOR_relationship_smooth( data=tr, varname="prot_att_poly2" )
-plot_logOR_relationship_smooth( data=tr[ tr$prot_att_miss == 0 , ], 
-                                varname="prot_att_poly2" )
-
-# Protein attenuation: What is the optimal value(s) to impute NAs to?
-mod <- glm( causal ~ prot_att + prot_att_poly2, 
-            data=tr[ tr$prot_att_miss == 0 , ], family="binomial" )
-quad_miss_imp( data=tr, model=mod, miss_var="prot_att_miss" )
-
-# ABC_count
-plot_logOR_relationship_smooth( data=tr, varname="ABC_count" )
-
-# ABC_length_per_type
-plot_logOR_relationship_smooth( data=tr, varname="ABC_length_per_type" )
-plot_logOR_relationship_smooth( data=tr, varname="abc_bp_log10" )
-
-# Roadmap_count
-plot_logOR_relationship_smooth( data=tr, varname="Roadmap_count" )
-
-# Roadmap_length_per_type
-plot_logOR_relationship_smooth( data=tr, varname="Roadmap_length_per_type" )
-plot_logOR_relationship_smooth( data=tr, varname="roadmap_bp_log10" )
-
-# promoter_count
-plot_logOR_relationship_smooth( data=tr, varname="promoter_count" )
-plot_logOR_relationship_smooth( data=tr, varname="promoter_count_log10" )
-
-# connect_decile
-plot_logOR_relationship_smooth( data=tr, varname="connect_decile" )
-
-# connect_quantile
-plot_logOR_relationship_smooth( data=tr, varname="connect_quantile" )
-
-# connectedness
-table( tr$causal, tr$connectedness, useNA="if" )
-fisher.test( table( tr$causal, tr$connectedness ) )
-
-# PPI_degree_decile
-plot_logOR_relationship_smooth( data=tr, varname="PPI_degree_decile" )
-
-# PPI_degree_quantile
-plot_logOR_relationship_smooth( data=tr, varname="PPI_degree_quantile" )
-
-# PPI_degree_cat
-table( tr$causal, tr$PPI_degree_cat, useNA="if" )
-fisher.test( table( tr$causal, tr$PPI_degree_cat ) )
-
-# TF
-table( tr$causal, tr$TF, useNA="if" )
-fisher.test( table( tr$causal, tr$TF ) )
-
-
-#-------------------------------------------------------------------------------
-#   Compare competing feature definitions
-#-------------------------------------------------------------------------------
-
-# Number of genes in the locus
-mod1 <- glm( causal ~ prior_n_genes_locus, data=tr, family="binomial" )
-mod2 <- glm( causal ~ ngenes_nearby, data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-summary(mod1)$coef
-summary(mod2)$coef
-
-# Number of SNPs in the CS
-mod1 <- glm( causal ~ n_cs_snps,       data=tr, family="binomial" )
-mod2 <- glm( causal ~ log10_n_cs_snps, data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-summary(mod1)$coef
-summary(mod2)$coef
-
-# Width of the CS
-mod1 <- glm( causal ~ cs_width,       data=tr, family="binomial" )
-mod2 <- glm( causal ~ log10_cs_width, data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-summary(mod1)$coef
-summary(mod2)$coef
-
-# Protein attenuation
-mod1 <- glm( causal ~ prot_att_class,           data=tr, family="binomial" )
-mod2 <- glm( causal ~ prot_att,                 data=tr, family="binomial" )
-mod3 <- glm( causal ~ prot_att + prot_att_miss, data=tr, family="binomial" )
-mod4 <- glm( causal ~ prot_att + prot_att_poly2 + prot_att_miss, data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-dev_exp(mod3)
-dev_exp(mod4)
-anova( mod2, mod3, test="Chi" )[["Pr(>Chi)"]][2]
-anova( mod3, mod4, test="Chi" )[["Pr(>Chi)"]][2]
-summary(mod1)$coef
-summary(mod2)$coef
-summary(mod3)$coef
-summary(mod4)$coef
-
-# RVIS
-tr$rvis_gt_1    <- tr$rvis > 1  & !is.na(tr$rvis)
-tr$rvis_gt_2    <- tr$rvis > 2  & !is.na(tr$rvis)
-tr$rvis_gt_3    <- tr$rvis > 3  & !is.na(tr$rvis)
-te$rvis_gt_3    <- te$rvis > 3  & !is.na(te$rvis)
-tr$rvis_gt_4    <- tr$rvis > 4  & !is.na(tr$rvis)
-tr$rvis_lt_neg1 <- tr$rvis < -1 & !is.na(tr$rvis)
-tr$rvis_lt_neg2 <- tr$rvis < -2 & !is.na(tr$rvis)
-tr$rvis_lt_neg3 <- tr$rvis < -3 & !is.na(tr$rvis)
-te$rvis_lt_neg3 <- te$rvis < -3 & !is.na(te$rvis)
-tr$rvis_lt_neg4 <- tr$rvis < -4 & !is.na(tr$rvis)
-tr$rvis4_pos    <- ifelse( tr$rvis4 < 0, 0, tr$rvis4 )
-te$rvis4_pos    <- ifelse( te$rvis4 < 0, 0, te$rvis4 )
-tr$rvis4_neg    <- ifelse( tr$rvis4 > 0, 0, tr$rvis4 )
-te$rvis4_neg    <- ifelse( te$rvis4 > 0, 0, te$rvis4 )
-tr$rvis4_pos_poly2 <- ifelse( tr$rvis4 < 0, 0, tr$rvis4^2 )
-te$rvis4_pos_poly2 <- ifelse( te$rvis4 < 0, 0, te$rvis4^2 )
-tr$rvis4_neg_poly2 <- ifelse( tr$rvis4 > 0, 0, tr$rvis4^2 )
-te$rvis4_neg_poly2 <- ifelse( te$rvis4 > 0, 0, te$rvis4^2 )
-mod0 <- glm( causal ~ rvis4 +                    rvis_miss, data=tr, family="binomial" )
-mod1 <- glm( causal ~ rvis_gt_1 + rvis_lt_neg1 + rvis_miss, data=tr, family="binomial" )
-mod2 <- glm( causal ~ rvis_gt_2 + rvis_lt_neg2 + rvis_miss, data=tr, family="binomial" )
-mod3 <- glm( causal ~ rvis_gt_3 + rvis_lt_neg3 + rvis_miss, data=tr, family="binomial" )
-mod4 <- glm( causal ~ rvis_gt_4 + rvis_lt_neg4 + rvis_miss, data=tr, family="binomial" )
-mod5 <- glm( causal ~ rvis4_pos + rvis4_neg    + rvis_miss, data=tr, family="binomial" )
-dev_exp(mod0)
-dev_exp(mod1)
-dev_exp(mod2)
-dev_exp(mod3)
-dev_exp(mod4)
-dev_exp(mod5)
-AIC(mod0); AIC(mod3); AIC(mod5)
-summary(mod1)$coef
-summary(mod2)$coef
-summary(mod3)$coef
-summary(mod4)$coef
-summary(mod5)$coef
-
-# pLI
-mod1 <- glm( causal ~ pLI,                               data=tr, family="binomial" )
-mod2 <- glm( causal ~ pLI_lt_0.1,                        data=tr, family="binomial" )
-mod3 <- glm( causal ~ pLI_lt_0.1 + pLI_gt_0.9,           data=tr, family="binomial" )
-mod4 <- glm( causal ~ pLI_log10OR,                       data=tr, family="binomial" )
-mod5 <- glm( causal ~ pLI_log10OR_neg,                   data=tr, family="binomial" )
-mod6 <- glm( causal ~ pLI_log10OR_neg + pLI_log10OR_pos, data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-dev_exp(mod3)
-dev_exp(mod4)
-dev_exp(mod5)
-dev_exp(mod6)
-AIC(mod1); AIC(mod2); AIC(mod3); AIC(mod4); AIC(mod5); AIC(mod6)
-summary(mod1)$coef
-summary(mod2)$coef
-summary(mod3)$coef
-summary(mod4)$coef
-summary(mod5)$coef
-summary(mod6)$coef
-
-# PPI
-mod1 <- glm( causal ~ PPI_degree_quantile, data=tr, family="binomial" )
-mod2 <- glm( causal ~ PPI_degree_decile,   data=tr, family="binomial" )
-mod3 <- glm( causal ~ PPI_degree_cat,      data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-dev_exp(mod3)
-
-# Connectedness
-mod1 <- glm( causal ~ connect_quantile, data=tr, family="binomial" )
-mod2 <- glm( causal ~ connect_decile,   data=tr, family="binomial" )
-mod3 <- glm( causal ~ connectedness,    data=tr, family="binomial" )
-dev_exp(mod1)
-dev_exp(mod2)
-dev_exp(mod3)
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Full model + GLCs
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   LOTO
-#-------------------------------------------------------------------------------
-
-# Run a naive regression using published best-in-locus
-bias_cols <- c( "rvis4",           "rvis_miss",
-                "pLI_log10OR_neg", "pLI_lt_0.1",
-                "LOEUF",           "hs_log10",
-                "gene_bp_log10",   "cds_bp_log10",
-                "pritchard_miss" )
-glc_cols  <- c( "prot_att",             "prot_att_miss", 
-                "pLI_log10OR_pos",      "pLI_gt_0.9",
-                "ABC_count",            "abc_bp_log10",
-                "Roadmap_count",        "roadmap_bp_log10",
-                "promoter_count_log10",
-                "TF",
-                "connect_decile",       "connectedness",
-                "PPI_degree_decile",    "PPI_degree_cat" )
-fg_cols   <- c( f_cols, bias_cols, glc_cols )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..fg_cols ][,-1] ), order="hclust" )
-
-# Run
-# fg_loto <- loto( data=tr, feat_cols=fg_cols, backwards_selection=TRUE, maxit=100,
-#                  bias_cols=bias_cols )
-# saveRDS( object=fg_loto, file=file.path( maindir, "loto_full_glc.rds" ) )
-# fg_loto <- readRDS( file=file.path( maindir, "loto_full_glc.rds" ) )
-# fg_pr   <- plot_loto_pr(fg_loto)
-# n_inc_las(fg_loto)
-
-# Run LOTO
-# fgl_glm  <- loto( data=tr, method="glm",    feat_cols=fg_cols, bias_cols=bias_cols,
-#                  backwards_selection=TRUE )
-# saveRDS( object=fgl_glm, file=file.path( maindir, "loto_full_glc_glm.rds" ) )
-fgl_glm  <- readRDS( file=file.path( maindir, "loto_full_glc_glm.rds" ) )
-fgl_las1 <- loto( data=tr, method="lasso1", feat_cols=fg_cols, bias_cols=bias_cols )
-fgl_las2 <- loto( data=tr, method="lasso2", feat_cols=fg_cols, bias_cols=bias_cols )
-# fgl_xgb  <- loto( data=tr, method="xgb",    feat_cols=fg_cols, bias_cols=bias_cols, 
-#                   maxit=100 )
-# saveRDS( object=fgl_xgb, file=file.path( maindir, "loto_full_glc_xgb.rds" ) )
-fgl_xgb  <- readRDS( file=file.path( maindir, "loto_full_glc_xgb.rds" ) )
-
-# Plot
-fgl_glm_pr  <- plot_loto_pr(fgl_glm)
-fgl_las1_pr <- plot_loto_pr(fgl_las1)
-fgl_las2_pr <- plot_loto_pr(fgl_las2)
-fgl_xgb_pr  <- plot_loto_pr(fgl_xgb)
-
-# AUPRCs
-fg_pr <- c( fgl_glm_pr, fgl_las1_pr, fgl_las2_pr, fgl_xgb_pr )
-names(fg_pr) <- c( "GLM", "LASSO1", "LASSO2", "XGBoost" )
-barplot( height=fg_pr, las=2, col=brewer.pal( n=length(fg_pr), name="Greens" ) )
-
-
-#-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# Run regression
-fg_form <- make_formula( lhs=fg_cols[1], rhs=fg_cols[-1] )
-fg_glm  <- glm( formula=fg_form, data=tr, family="binomial" )
-
-
-#-------------------------------------------------------------------------------
-#   LASSO
-#-------------------------------------------------------------------------------
-
-# Make LASSO model
-fg_las <- cv.glmnet( x=as.matrix( tr[ , ..fg_cols ] )[,-1], 
-                     y=tr[["causal"]], family="binomial", standardize=FALSE )
-
-
-#-------------------------------------------------------------------------------
-#   XGBoost
-#-------------------------------------------------------------------------------
-
-t0 <- proc.time()
-fg_xgb <- train_xgb( data=tr, feat_cols=fg_cols[-1], maxit=100, 
-                      bias_cols=bias_cols )
-plot_fi(fg_xgb)
-t1 <- proc.time()
-t1-t0
-
-
-#-------------------------------------------------------------------------------
-#   Assess performance of the models in the test set
-#-------------------------------------------------------------------------------
-
-# AUPRC: REMOVE gene-level covariates
-fg_pr1 <- auprc_test_set( test_df   = te, 
-                          rand_mod  = rand_mod,
-                          glm_mod   = fg_glm, 
-                          las_mod   = fg_las, 
-                          xgb_mod   = fg_xgb1, 
-                          ymax      = 1, 
-                          bias_cols = bias_cols, 
-                          glc_cols  = glc_cols,
-                          rm_glc    = TRUE )
-
-# AUPRC: KEEP gene-level covariates
-fg_pr2 <- auprc_test_set( test_df   = te, 
-                          rand_mod  = rand_mod,
-                          glm_mod   = fg_glm, 
-                          las_mod   = fg_las, 
-                          xgb_mod   = fg_xgb2, 
-                          ymax      = 1, 
-                          bias_cols = bias_cols )
-
-# PR curves: REMOVE gene-level covariates
-plot_pr( model=fg_glm,  test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-plot_pr( model=fg_xgb1, test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-
-# PR curves: KEEP gene-level covariates
-plot_pr( model=fg_glm,  test_df=te, bias_cols=bias_cols )
-plot_pr( model=fg_xgb2, test_df=te, bias_cols=bias_cols )
 
 
 #-------------------------------------------------------------------------------
@@ -2056,7 +1234,6 @@ plot_pr( model=fg_xgb2, test_df=te, bias_cols=bias_cols )
 #-------------------------------------------------------------------------------
 
 # Raw feature correlations
-sg_cols <- c( s_cols, bias_cols, glc_cols )
 corrplot( cor( tr[ , ..sg_cols ][,-1] ), order="hclust" )
 
 # Run
@@ -2097,25 +1274,6 @@ for( i in seq_along(bp) ){
 
 
 #-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# Run regression
-sg_form <- make_formula( lhs=sg_cols[1], rhs=sg_cols[-1] )
-sg_glm0 <- glm( formula=sg_form, data=tr, family="binomial" )
-sg_glm  <- stats::step( object=sg_glm0, k=qchisq( 1-0.05/5, df=1 ) )
-
-# Extract deviance explained
-dev_exp( model=sg_glm, in_sample=TRUE  ) / dev_exp( model=fg_glm, in_sample=TRUE  )
-dev_exp( model=sg_glm, in_sample=FALSE ) / dev_exp( model=fg_glm, in_sample=FALSE )
-
-# Forest plot
-glm_to_forest_p( mod=sg_glm, xmax=NULL )
-glm_to_forest(   mod=sg_glm, suffix="", standardize=FALSE )
-glm_to_forest(   mod=sg_glm, suffix="", standardize=TRUE )
-
-
-#-------------------------------------------------------------------------------
 #   LASSO
 #-------------------------------------------------------------------------------
 
@@ -2130,53 +1288,6 @@ abline( v=log(sg_las$lambda.1se), lty=2, col="grey" )
 cbind( coef( sg_las, s="lambda.min" ),
        coef( sg_las, s="lambda.1se" ),
        0:sg_las$glmnet.fit$beta@Dim[1] )
-
-
-#-------------------------------------------------------------------------------
-#   XGBoost
-#-------------------------------------------------------------------------------
-
-sg_xgb <- train_xgb( data=tr, feat_cols=sg_cols[-1], maxit=100, 
-                      bias_cols=bias_cols )
-xgb_to_forest( xgb_mod=sg_xgb, suffix="", xmax=NULL )
-plot_fi(sg_xgb)
-
-
-#-------------------------------------------------------------------------------
-#   Assess performance of the models in the test set
-#-------------------------------------------------------------------------------
-
-# AUPRC: REMOVE gene-level covariates
-sg_pr1 <- auprc_test_set( test_df   = te, 
-                          rand_mod  = rand_mod,
-                          glm_mod   = sg_glm, 
-                          las_mod   = sg_las, 
-                          xgb_mod   = sg_xgb1, 
-                          ymax      = 1, 
-                          bias_cols = bias_cols, 
-                          glc_cols  = glc_cols,
-                          rm_glc    = TRUE )
-fg_pr1; sg_pr1; sg_pr1/fg_pr1
-og_pr1; sg_pr1; sg_pr1/og_pr1
-
-# AUPRC: KEEP gene-level covariates
-sg_pr2 <- auprc_test_set( test_df   = te, 
-                          rand_mod  = rand_mod,
-                          glm_mod   = sg_glm, 
-                          las_mod   = sg_las, 
-                          xgb_mod   = sg_xgb2, 
-                          ymax      = 1, 
-                          bias_cols = bias_cols )
-fg_pr2; sg_pr2; sg_pr2/fg_pr2
-og_pr2; sg_pr2; sg_pr2/og_pr2
-
-# PR curves: REMOVE gene-level covariates
-plot_pr( model=sg_glm,  test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-plot_pr( model=sg_xgb1, test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-
-# PR curves: KEEP gene-level covariates
-plot_pr( model=sg_glm,  test_df=te, bias_cols=bias_cols )
-plot_pr( model=sg_xgb2, test_df=te, bias_cols=bias_cols )
 
 
 #-------------------------------------------------------------------------------
@@ -2536,6 +1647,815 @@ plot( adj_data_te$original, adj_data_te$modeled, col=adj_data_te$col, cex=2,
       lwd=2, xlim=c(0,1), ylim=c(0,1),
       xlab="Original P(causal)", ylab="Modeled P(causal)", las=1 )
 abline( a=0, b=1, lwd=2, lty=2, col="grey" )
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Full: GLM + XGB
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   GLM
+#-------------------------------------------------------------------------------
+
+# Run regression
+f_form <- make_formula( lhs=f_cols[1], rhs=f_cols[-1] )
+f_glm  <- glm( formula=f_form, data=tr, family="binomial" )
+
+# Extract deviance explained
+devexp_f_glm <- dev_exp(f_glm)
+
+
+#-------------------------------------------------------------------------------
+#   XGBoost
+#-------------------------------------------------------------------------------
+
+# Run
+t0 <- proc.time()
+f_xgb <- train_xgb( data=tr, feat_cols=f_cols[-1], maxit=100 )
+plot_fi(f_xgb)
+t1 <- proc.time()
+t1-t0
+
+
+#-------------------------------------------------------------------------------
+#   Assess performance of the models in the test set
+#-------------------------------------------------------------------------------
+
+# AUPRC
+f_pr <- auprc_test_set( test_df  = te, 
+                        rand_mod = rand_mod,
+                        glm_mod  = f_glm, 
+                        las_mod  = f_las, 
+                        xgb_mod  = f_xgb, 
+                        ymax     = 1 )
+
+# PR curves
+plot_pr( model=f_glm, test_df=te )
+plot_pr( model=f_xgb, test_df=te )
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Basic: GLM + XGB
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   GLM
+#-------------------------------------------------------------------------------
+
+# Run regression
+s_form <- make_formula( lhs=s_cols[1], rhs=s_cols[-1] )
+s_glm0 <- glm( formula=s_form, data=tr, family="binomial" )
+s_glm  <- stats::step( object=s_glm0, k=qchisq( 1-0.05/5, df=1 ), trace=0 )
+
+# Extract deviance explained
+dev_exp( model=s_glm, in_sample=TRUE  ) / dev_exp( model=f_glm, in_sample=TRUE )
+dev_exp( model=s_glm, in_sample=FALSE ) / dev_exp( model=f_glm, in_sample=FALSE )
+
+# Forest plot
+glm_to_forest_p( mod=s_glm, xmax=NULL )
+
+
+#-------------------------------------------------------------------------------
+#   XGBoost
+#-------------------------------------------------------------------------------
+
+s_xgb <- train_xgb( data=tr, feat_cols=s_cols[-1], maxit=100 )
+xgb_to_forest( xgb_mod=s_xgb, suffix="", xmax=NULL )
+plot_fi(s_xgb)
+
+
+#-------------------------------------------------------------------------------
+#   Assess performance of the models in the test set
+#-------------------------------------------------------------------------------
+
+# AUPRC
+s_pr <- auprc_test_set( test_df  = te, 
+                        rand_mod = rand_mod,
+                        glm_mod  = s_glm, 
+                        las_mod  = s_las, 
+                        xgb_mod  = s_xgb, 
+                        ymax     = 1 )
+f_pr; s_pr; s_pr/f_pr
+
+# PR curves
+plot_pr( model=s_glm, test_df=te )
+plot_pr( model=s_xgb, test_df=te )
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Basic + GLC: GLM + XGB
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   GLM
+#-------------------------------------------------------------------------------
+
+# Run regression
+sg_form <- make_formula( lhs=sg_cols[1], rhs=sg_cols[-1] )
+sg_glm0 <- glm( formula=sg_form, data=tr, family="binomial" )
+sg_glm  <- stats::step( object=sg_glm0, k=qchisq( 1-0.05/5, df=1 ) )
+
+# Extract deviance explained
+dev_exp( model=sg_glm, in_sample=TRUE  ) / dev_exp( model=fg_glm, in_sample=TRUE  )
+dev_exp( model=sg_glm, in_sample=FALSE ) / dev_exp( model=fg_glm, in_sample=FALSE )
+
+# Forest plot
+glm_to_forest_p( mod=sg_glm, xmax=NULL )
+glm_to_forest(   mod=sg_glm, suffix="", standardize=FALSE )
+glm_to_forest(   mod=sg_glm, suffix="", standardize=TRUE )
+
+
+#-------------------------------------------------------------------------------
+#   XGBoost
+#-------------------------------------------------------------------------------
+
+sg_xgb <- train_xgb( data=tr, feat_cols=sg_cols[-1], maxit=100, 
+                     bias_cols=bias_cols )
+xgb_to_forest( xgb_mod=sg_xgb, suffix="", xmax=NULL )
+plot_fi(sg_xgb)
+
+
+#-------------------------------------------------------------------------------
+#   Assess performance of the models in the test set
+#-------------------------------------------------------------------------------
+
+# AUPRC: REMOVE gene-level covariates
+sg_pr1 <- auprc_test_set( test_df   = te, 
+                          rand_mod  = rand_mod,
+                          glm_mod   = sg_glm, 
+                          las_mod   = sg_las, 
+                          xgb_mod   = sg_xgb1, 
+                          ymax      = 1, 
+                          bias_cols = bias_cols, 
+                          glc_cols  = glc_cols,
+                          rm_glc    = TRUE )
+fg_pr1; sg_pr1; sg_pr1/fg_pr1
+og_pr1; sg_pr1; sg_pr1/og_pr1
+
+# AUPRC: KEEP gene-level covariates
+sg_pr2 <- auprc_test_set( test_df   = te, 
+                          rand_mod  = rand_mod,
+                          glm_mod   = sg_glm, 
+                          las_mod   = sg_las, 
+                          xgb_mod   = sg_xgb2, 
+                          ymax      = 1, 
+                          bias_cols = bias_cols )
+fg_pr2; sg_pr2; sg_pr2/fg_pr2
+og_pr2; sg_pr2; sg_pr2/og_pr2
+
+# PR curves: REMOVE gene-level covariates
+plot_pr( model=sg_glm,  test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+plot_pr( model=sg_xgb1, test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+
+# PR curves: KEEP gene-level covariates
+plot_pr( model=sg_glm,  test_df=te, bias_cols=bias_cols )
+plot_pr( model=sg_xgb2, test_df=te, bias_cols=bias_cols )
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   POPS + local
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+# Run a naive regression using published best-in-locus
+lcols <- c( "causal", "pops_and_local" )
+
+# Run regression
+l_form <- make_formula( lhs=lcols[1], rhs=lcols[-1] )
+l_glm  <- glm( formula=l_form, data=tr, family="binomial" )
+
+# Extract deviance explained
+devexp_l_glm <- ( l_glm$null.deviance - l_glm$deviance ) / l_glm$null.deviance
+
+# Forest plot
+glm_to_forest(l_glm)
+
+# Precision and recall: training
+sum( tr$causal & tr$pops_and_local ) / sum( tr$pops_and_local ) #precision
+sum( tr$causal & tr$pops_and_local ) / sum( tr$causal )         #recall
+
+# Precision and recall: test
+sum( te$causal & te$pops_and_local ) / sum( te$pops_and_local ) #precision
+sum( te$causal & te$pops_and_local ) / sum( te$causal )         #recall
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Published best-in-locus
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+# Run a naive regression using published best-in-locus
+p_cols <- c( "causal", "pops_bil", "dist_gene_bil", "magma_bil", "twas_bil", 
+             "clpp_bil", "abc_bil", "corr_any_bil", "pchic_any_bil", "smr_bil" )
+
+# Raw feature correlations
+corrplot( cor( tr[ , ..p_cols ][,-1] ), order="hclust" )
+
+# Run regression
+p_form <- make_formula( lhs=p_cols[1], rhs=p_cols[-1] )
+p_glm  <- glm( formula=p_form, data=tr, family="binomial" )
+
+# Extract deviance explained
+devexp_p_glm <- dev_exp(p_glm)
+
+# Forest plot
+glm_to_forest(p_glm)
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   All best-in-locus (only)
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+# Raw feature correlations
+corrplot( cor( tr[ , ..a_cols ][,-1] ), order="hclust" )
+
+# Run regression
+a_form <- make_formula( lhs=a_cols[1], rhs=a_cols[-1] )
+a_glm  <- glm( formula=a_form, data=tr, family="binomial" )
+
+# Extract deviance explained
+devexp_a_glm <- dev_exp(a_glm)
+
+# Forest plot
+glm_to_forest_p( mod=a_glm, suffix="_bilTRUE" )
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Global-only
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   Feature engineering: compare definitions, find linear relationships
+#-------------------------------------------------------------------------------
+
+# Plot relationship: distance to gene body
+plot_logOR_relationship_smooth( data=tr, varname="distance_genebody" )
+plot_logOR_relationship_smooth( data=tr[ tr$distance_genebody > 0 ], 
+                                varname="distance_genebody" )
+plot_logOR_relationship_smooth( data=tr, varname="dist_gene_raw_l2g" )
+plot_logOR_relationship_smooth( data=tr, varname="dist_gene_glo" )
+
+# Plot relationship: distance to TSS
+plot_logOR_relationship_smooth( data=tr, varname="distance_tss" )
+plot_logOR_relationship_smooth( data=tr, varname="dist_tss_raw_l2g" )
+plot_logOR_relationship_smooth( data=tr, varname="dist_tss_glo" )
+
+# Plot relationship: POPS
+plot_logOR_relationship_smooth( data=tr, varname="pops_glo" )
+
+# Plot relationship: TWAS
+plot_logOR_relationship_smooth( data=tr, varname="twas_logp_glo" )
+plot_logOR_relationship_smooth( data=tr, varname="twas_glo" )
+
+# Plot relationship: E-P Liu
+plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_raw_l2g > 0 , ], 
+                                varname="corr_liu_raw_l2g" )
+plot_logOR_relationship_smooth( data=tr, varname="corr_liu_raw_l2g" )
+plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_glo > 0 , ], 
+                                varname="corr_liu_glo" )
+plot_logOR_relationship_smooth( data=tr, varname="corr_liu_glo" )
+
+# Plot relationship: E-P Andersson
+plot_logOR_relationship_smooth( data=tr[ tr$corr_and_glo > 0 , ], 
+                                varname="corr_and_glo" )
+plot_logOR_relationship_smooth( data=tr, varname="corr_and_glo" )
+
+# Plot relationship: E-P Ulirsch
+plot_logOR_relationship_smooth( data=tr[ tr$corr_uli_glo > 0 , ], 
+                                varname="corr_uli_glo" )
+plot_logOR_relationship_smooth( data=tr, varname="corr_uli_glo" )
+
+# Plot relationship: PCHi-C Jung
+plot_logOR_relationship_smooth( data=tr[ tr$pchic_jung_glo > 0 , ], 
+                                varname="pchic_jung_glo" )
+plot_logOR_relationship_smooth( data=tr, varname="pchic_jung_glo" )
+
+# Plot relationship: PCHi-C Javierre
+plot_logOR_relationship_smooth( data=tr[ tr$pchic_jav_glo > 0 , ], 
+                                varname="pchic_jav_glo" )
+plot_logOR_relationship_smooth( data=tr, varname="pchic_jav_glo" )
+
+# Plot relationship: CLPP
+plot_logOR_relationship_smooth( data=tr[ tr$clpp_raw_l2g > 0 , ], 
+                                varname="clpp_raw_l2g" )
+plot_logOR_relationship_smooth( data=tr, varname="clpp_raw_l2g" )
+plot_logOR_relationship_smooth( data=tr[ tr$clpp_glo > log10(0.0001) , ], 
+                                varname="clpp_glo" )
+plot_logOR_relationship_smooth( data=tr, varname="clpp_glo" )
+
+# Plot relationship: ABC
+plot_logOR_relationship_smooth( data=tr[ tr$abc_raw_l2g > 0 , ], 
+                                varname="abc_raw_l2g" )
+plot_logOR_relationship_smooth( data=tr, varname="abc_raw_l2g" )
+plot_logOR_relationship_smooth( data=tr[ tr$abc_raw_l2g > 0 , ], 
+                                varname="abc_glo" )
+plot_logOR_relationship_smooth( data=tr, varname="abc_glo" )
+
+# Plot relationship: MAGMA
+plot_logOR_relationship_smooth( data=tr, varname="magma_glo" )
+plot_logOR_relationship_smooth( data=tr[ tr$magma_glo != median(tr$magma_glo) , ], 
+                                varname="magma_glo" )
+
+# Plot relationship: SMR
+plot_logOR_relationship_smooth( data=tr, varname="smr_glo" )
+plot_logOR_relationship_smooth( data=tr[ tr$smr_glo != median(tr$smr_glo) , ], 
+                                varname="smr_glo" )
+
+# Plot relationship: coding
+plot_logOR_relationship_smooth( data=tr, varname="coding_glo" )
+plot_logOR_relationship_smooth( data=tr[ tr$coding_glo != -3 , ], 
+                                varname="coding_glo" )
+
+# DEPICT and NetWAS
+plot_logOR_relationship_smooth( data=tr, varname="depict_z_glo" )
+plot_logOR_relationship_smooth( data=tr, varname="netwas_score_glo" )
+plot_logOR_relationship_smooth( data=tr, varname="netwas_bon_score_glo" )
+
+
+#-------------------------------------------------------------------------------
+#   Compare competing feature definitions
+#-------------------------------------------------------------------------------
+
+# Distance to gene body
+mod1 <- glm( causal ~ distance_genebody, data=tr, family="binomial" )
+mod2 <- glm( causal ~ dist_gene_raw_l2g, data=tr, family="binomial" )
+mod3 <- glm( causal ~ dist_gene_glo, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+summary(mod1)$coef
+summary(mod2)$coef
+summary(mod3)$coef
+
+# Distance to TSS
+mod1 <- glm( causal ~ distance_tss,     data=tr, family="binomial" )
+mod2 <- glm( causal ~ dist_tss_raw_l2g, data=tr, family="binomial" )
+mod3 <- glm( causal ~ dist_tss_glo, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+summary(mod1)$coef
+summary(mod2)$coef
+summary(mod3)$coef
+
+# Number of genes in the locus
+mod1 <- glm( causal ~ ngenes_nearby,       data=tr, family="binomial" )
+mod2 <- glm( causal ~ prior_n_genes_locus, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+summary(mod1)$coef
+summary(mod2)$coef
+
+# TWAS
+mod1 <- glm( causal ~ twas_logp_glo,  data=tr, family="binomial" )
+mod2 <- glm( causal ~ twas_glo,  data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+summary(mod1)$coef
+summary(mod2)$coef
+
+# Plot relationship: E-P Liu
+mod1 <- glm( causal ~ corr_liu_raw_l2g,  data=tr, family="binomial" )
+mod2 <- glm( causal ~ corr_liu_glo,  data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+summary(mod1)$coef
+summary(mod2)$coef
+
+# CLPP
+mod1 <- glm( causal ~ clpp_raw_l2g,  data=tr, family="binomial" )
+mod2 <- glm( causal ~ clpp_glo,  data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+summary(mod1)$coef
+summary(mod2)$coef
+
+# ABC
+mod1 <- glm( causal ~ abc_raw_l2g,  data=tr, family="binomial" )
+mod2 <- glm( causal ~ abc_glo,  data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+summary(mod1)$coef
+summary(mod2)$coef
+
+# DEPICT and NetWAS
+mod1 <- glm( causal ~ depict_z_glo,         data=tr, family="binomial" )
+mod2 <- glm( causal ~ netwas_score_glo,     data=tr, family="binomial" )
+mod3 <- glm( causal ~ netwas_bon_score_glo, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Relative-only
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   Feature engineering: compare with/without best value (captured by BIL features)
+#-------------------------------------------------------------------------------
+
+# Plot relationship: distance to gene body
+plot_logOR_relationship_smooth( data=tr, varname="dist_gene_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$dist_gene_rel != -3 , ], varname="dist_gene_rel" )
+
+# Plot relationship: distance to TSS
+plot_logOR_relationship_smooth( data=tr, varname="dist_tss_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$dist_tss_rel != -3 , ], varname="dist_tss_rel" )
+
+# Plot relationship: POPS
+plot_logOR_relationship_smooth( data=tr, varname="pops_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$pops_rel !=0 , ], varname="pops_rel" )
+
+# Plot relationship: TWAS
+plot_logOR_relationship_smooth( data=tr, varname="twas_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$twas_rel !=0 , ], varname="twas_rel" )
+
+# Plot relationship: E-P Liu
+plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_rel != 0 , ], varname="corr_liu_rel" )
+plot_logOR_relationship_smooth( data=tr, varname="corr_liu_rel" )
+
+# Plot relationship: E-P Andersson
+plot_logOR_relationship_smooth( data=tr[ tr$corr_and_rel != 0 , ], varname="corr_and_rel" )
+plot_logOR_relationship_smooth( data=tr, varname="corr_and_rel" )
+
+# Plot relationship: E-P Ulirsch
+plot_logOR_relationship_smooth( data=tr[ tr$corr_uli_rel != 0 , ], varname="corr_uli_rel" )
+plot_logOR_relationship_smooth( data=tr, varname="corr_uli_rel" )
+
+# Plot relationship: PCHi-C Jung
+plot_logOR_relationship_smooth( data=tr[ tr$pchic_jung_rel != 0 , ], varname="pchic_jung_rel" )
+plot_logOR_relationship_smooth( data=tr, varname="pchic_jung_rel" )
+
+# Plot relationship: PCHi-C Javierre
+plot_logOR_relationship_smooth( data=tr[ tr$pchic_jav_rel != 0 , ], varname="pchic_jav_rel" )
+plot_logOR_relationship_smooth( data=tr, varname="pchic_jav_rel" )
+
+# Plot relationship: CLPP
+plot_logOR_relationship_smooth( data=tr[ tr$clpp_rel != 0 , ], varname="clpp_rel" )
+plot_logOR_relationship_smooth( data=tr, varname="clpp_rel" )
+
+# Plot relationship: ABC
+plot_logOR_relationship_smooth( data=tr[ tr$abc_rel != 0 , ], varname="abc_rel" )
+plot_logOR_relationship_smooth( data=tr, varname="abc_rel" )
+
+# Plot relationship: MAGMA
+plot_logOR_relationship_smooth( data=tr, varname="magma_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$magma_rel != 0 , ], varname="magma_rel" )
+
+# Plot relationship: SMR
+plot_logOR_relationship_smooth( data=tr, varname="smr_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$smr_rel != 0 , ], varname="smr_rel" )
+
+# Plot relationship: coding
+plot_logOR_relationship_smooth( data=tr, varname="coding_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$coding_rel != 0 , ], varname="coding_rel" )
+
+# Plot relationship: DEPICT
+plot_logOR_relationship_smooth( data=tr, varname="depict_z_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$depict_z_rel != 0 , ], varname="depict_z_rel" )
+
+# Plot relationship: NetWAS
+plot_logOR_relationship_smooth( data=tr, varname="netwas_score_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$netwas_score_rel != 0 , ], varname="netwas_score_rel" )
+plot_logOR_relationship_smooth( data=tr, varname="netwas_bon_score_rel" )
+plot_logOR_relationship_smooth( data=tr[ tr$netwas_bon_score_rel != 0 , ], varname="netwas_bon_score_rel" )
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   For each V2G method, compare BIL, global, and relative features
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+# Plot deviance explained by all univariate methods
+all_de0 <- list()
+all_cols <- unique( c( a_cols, glo_cols, rel_cols, cov_cols ) )[-1]
+for( i in all_cols ){
+  form <- paste0( "causal ~ ", i )
+  mod  <- glm( as.formula(form), data=tr, family="binomial" )
+  all_de0[[i]] <- c( ( mod$null.deviance - mod$deviance ) / mod$null.deviance )
+}
+all_de <- unlist(all_de0)
+par( mar=c(9,4,1,1) )
+barplot( sort( all_de[ all_de > 0.04 ], decreasing=TRUE ), las=2)
+par( mar=c(5,5,1,1) )
+
+# POPS
+v2g_devexp( data=tr, prefix="pops" )
+v2g_cor( data=tr, prefix="pops" )
+corrplot( v2g_cor( data=tr, prefix="pops" ) )
+
+# Distance: gene
+v2g_devexp( data=tr, prefix="dist_gene" )
+v2g_cor( data=tr, prefix="dist_gene" )
+corrplot( v2g_cor( data=tr, prefix="dist_gene" ) )
+
+# Distance: TSS
+v2g_devexp( data=tr, prefix="dist_tss" )
+v2g_cor( data=tr, prefix="dist_tss" )
+corrplot( v2g_cor( data=tr, prefix="dist_tss" ) )
+
+# TWAS
+v2g_devexp( data=tr, prefix="twas" )
+v2g_cor( data=tr, prefix="twas" )
+corrplot( v2g_cor( data=tr, prefix="twas" ) )
+
+# MAGMA
+v2g_devexp( data=tr, prefix="magma" )
+v2g_cor( data=tr, prefix="magma" )
+corrplot( v2g_cor( data=tr, prefix="magma" ) )
+
+# SMR
+v2g_devexp( data=tr, prefix="smr" )
+v2g_cor( data=tr, prefix="smr" )
+corrplot( v2g_cor( data=tr, prefix="smr" ) )
+
+# Coding
+v2g_devexp( data=tr, prefix="coding" )
+v2g_cor( data=tr, prefix="coding" )
+corrplot( v2g_cor( data=tr, prefix="coding" ) )
+
+# Liu
+v2g_devexp( data=tr, prefix="corr_liu" )
+v2g_cor( data=tr, prefix="corr_liu" )
+corrplot( v2g_cor( data=tr, prefix="corr_liu" ) )
+
+# Andersson
+v2g_devexp( data=tr, prefix="corr_and" )
+v2g_cor( data=tr, prefix="corr_and" )
+corrplot( v2g_cor( data=tr, prefix="corr_and" ) )
+
+# Ulirsch
+v2g_devexp( data=tr, prefix="corr_uli" )
+v2g_cor( data=tr, prefix="corr_uli" )
+corrplot( v2g_cor( data=tr, prefix="corr_uli" ) )
+
+# Jung
+v2g_devexp( data=tr, prefix="pchic_jung" )
+v2g_cor( data=tr, prefix="pchic_jung" )
+corrplot( v2g_cor( data=tr, prefix="pchic_jung" ) )
+
+# Javierre
+v2g_devexp( data=tr, prefix="pchic_jav" )
+v2g_cor( data=tr, prefix="pchic_jav" )
+corrplot( v2g_cor( data=tr, prefix="pchic_jav" ) )
+
+# CLPP
+v2g_devexp( data=tr, prefix="clpp" )
+v2g_cor( data=tr, prefix="clpp" )
+corrplot( v2g_cor( data=tr, prefix="clpp" ) )
+
+# ABC
+v2g_devexp( data=tr, prefix="abc" )
+v2g_cor( data=tr, prefix="abc" )
+corrplot( v2g_cor( data=tr, prefix="abc" ) )
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Gene-level covariates (GLCs)
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   Feature engineering: number of nearby genes
+#-------------------------------------------------------------------------------
+
+# Number of genes in the locus
+plot_logOR_relationship_smooth( data=tr, varname="prior_n_genes_locus" )
+plot_logOR_relationship_smooth( data=tr, varname="ngenes_nearby" )
+
+
+#-------------------------------------------------------------------------------
+#   Feature engineering: bias features
+#-------------------------------------------------------------------------------
+
+# RVIS, truncated
+plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis" )
+plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis4" )
+plot_logOR_relationship_smooth( data=tr[ tr$rvis_miss == 0 , ], varname="rvis4_poly2" )
+plot_logOR_relationship_smooth( data=tr, varname="rvis4" )
+
+# RVIS: What is the optimal value to impute NAs to?
+mod <- glm( causal ~ rvis4 + rvis4_poly2, 
+            data=tr[ tr$rvis_miss == 0 , ], family="binomial" )
+quad_miss_imp( data=tr, model=mod, miss_var="rvis_miss" )
+
+# pLI
+plot_logOR_relationship_smooth( data=tr, varname="pLI" )
+plot_logOR_relationship_smooth( data=tr, varname="pLI_log10OR" )
+plot_logOR_relationship_smooth( data=tr[ tr$pLI_log10OR_pos > 0 , ], varname="pLI_log10OR_pos" )
+plot_logOR_relationship_smooth( data=tr[ tr$pLI_log10OR_neg < 0 , ], varname="pLI_log10OR_neg" )
+
+# LOEUF
+plot_logOR_relationship_smooth( data=tr, varname="LOEUF" )
+
+# hs
+plot_logOR_relationship_smooth( data=tr, varname="hs" )
+plot_logOR_relationship_smooth( data=tr, varname="hs_log10" )
+
+# Gene length
+plot_logOR_relationship_smooth( data=tr, varname="length" )
+plot_logOR_relationship_smooth( data=tr, varname="gene_bp_log10" )
+
+# CDS length
+plot_logOR_relationship_smooth( data=tr, varname="CDS_length" )
+plot_logOR_relationship_smooth( data=tr, varname="cds_bp_log10" )
+
+
+#-------------------------------------------------------------------------------
+#   Feature engineering: GLCs
+#-------------------------------------------------------------------------------
+
+# Protein attenuation
+plot_logOR_relationship_smooth( data=tr, varname="prot_att" )
+plot_logOR_relationship_smooth( data=tr[ tr$prot_att_miss == 0 , ], 
+                                varname="prot_att" )
+plot_logOR_relationship_smooth( data=tr, varname="prot_att_poly2" )
+plot_logOR_relationship_smooth( data=tr[ tr$prot_att_miss == 0 , ], 
+                                varname="prot_att_poly2" )
+
+# Protein attenuation: What is the optimal value(s) to impute NAs to?
+mod <- glm( causal ~ prot_att + prot_att_poly2, 
+            data=tr[ tr$prot_att_miss == 0 , ], family="binomial" )
+quad_miss_imp( data=tr, model=mod, miss_var="prot_att_miss" )
+
+# ABC_count
+plot_logOR_relationship_smooth( data=tr, varname="ABC_count" )
+
+# ABC_length_per_type
+plot_logOR_relationship_smooth( data=tr, varname="ABC_length_per_type" )
+plot_logOR_relationship_smooth( data=tr, varname="abc_bp_log10" )
+
+# Roadmap_count
+plot_logOR_relationship_smooth( data=tr, varname="Roadmap_count" )
+
+# Roadmap_length_per_type
+plot_logOR_relationship_smooth( data=tr, varname="Roadmap_length_per_type" )
+plot_logOR_relationship_smooth( data=tr, varname="roadmap_bp_log10" )
+
+# promoter_count
+plot_logOR_relationship_smooth( data=tr, varname="promoter_count" )
+plot_logOR_relationship_smooth( data=tr, varname="promoter_count_log10" )
+
+# connect_decile
+plot_logOR_relationship_smooth( data=tr, varname="connect_decile" )
+
+# connect_quantile
+plot_logOR_relationship_smooth( data=tr, varname="connect_quantile" )
+
+# connectedness
+table( tr$causal, tr$connectedness, useNA="if" )
+fisher.test( table( tr$causal, tr$connectedness ) )
+
+# PPI_degree_decile
+plot_logOR_relationship_smooth( data=tr, varname="PPI_degree_decile" )
+
+# PPI_degree_quantile
+plot_logOR_relationship_smooth( data=tr, varname="PPI_degree_quantile" )
+
+# PPI_degree_cat
+table( tr$causal, tr$PPI_degree_cat, useNA="if" )
+fisher.test( table( tr$causal, tr$PPI_degree_cat ) )
+
+# TF
+table( tr$causal, tr$TF, useNA="if" )
+fisher.test( table( tr$causal, tr$TF ) )
+
+
+#-------------------------------------------------------------------------------
+#   Compare competing feature definitions
+#-------------------------------------------------------------------------------
+
+# Number of genes in the locus
+mod1 <- glm( causal ~ prior_n_genes_locus, data=tr, family="binomial" )
+mod2 <- glm( causal ~ ngenes_nearby, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+summary(mod1)$coef
+summary(mod2)$coef
+
+# Number of SNPs in the CS
+mod1 <- glm( causal ~ n_cs_snps,       data=tr, family="binomial" )
+mod2 <- glm( causal ~ log10_n_cs_snps, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+summary(mod1)$coef
+summary(mod2)$coef
+
+# Width of the CS
+mod1 <- glm( causal ~ cs_width,       data=tr, family="binomial" )
+mod2 <- glm( causal ~ log10_cs_width, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+summary(mod1)$coef
+summary(mod2)$coef
+
+# Protein attenuation
+mod1 <- glm( causal ~ prot_att_class,           data=tr, family="binomial" )
+mod2 <- glm( causal ~ prot_att,                 data=tr, family="binomial" )
+mod3 <- glm( causal ~ prot_att + prot_att_miss, data=tr, family="binomial" )
+mod4 <- glm( causal ~ prot_att + prot_att_poly2 + prot_att_miss, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+dev_exp(mod4)
+anova( mod2, mod3, test="Chi" )[["Pr(>Chi)"]][2]
+anova( mod3, mod4, test="Chi" )[["Pr(>Chi)"]][2]
+summary(mod1)$coef
+summary(mod2)$coef
+summary(mod3)$coef
+summary(mod4)$coef
+
+# RVIS
+tr$rvis_gt_1    <- tr$rvis > 1  & !is.na(tr$rvis)
+tr$rvis_gt_2    <- tr$rvis > 2  & !is.na(tr$rvis)
+tr$rvis_gt_3    <- tr$rvis > 3  & !is.na(tr$rvis)
+te$rvis_gt_3    <- te$rvis > 3  & !is.na(te$rvis)
+tr$rvis_gt_4    <- tr$rvis > 4  & !is.na(tr$rvis)
+tr$rvis_lt_neg1 <- tr$rvis < -1 & !is.na(tr$rvis)
+tr$rvis_lt_neg2 <- tr$rvis < -2 & !is.na(tr$rvis)
+tr$rvis_lt_neg3 <- tr$rvis < -3 & !is.na(tr$rvis)
+te$rvis_lt_neg3 <- te$rvis < -3 & !is.na(te$rvis)
+tr$rvis_lt_neg4 <- tr$rvis < -4 & !is.na(tr$rvis)
+tr$rvis4_pos    <- ifelse( tr$rvis4 < 0, 0, tr$rvis4 )
+te$rvis4_pos    <- ifelse( te$rvis4 < 0, 0, te$rvis4 )
+tr$rvis4_neg    <- ifelse( tr$rvis4 > 0, 0, tr$rvis4 )
+te$rvis4_neg    <- ifelse( te$rvis4 > 0, 0, te$rvis4 )
+tr$rvis4_pos_poly2 <- ifelse( tr$rvis4 < 0, 0, tr$rvis4^2 )
+te$rvis4_pos_poly2 <- ifelse( te$rvis4 < 0, 0, te$rvis4^2 )
+tr$rvis4_neg_poly2 <- ifelse( tr$rvis4 > 0, 0, tr$rvis4^2 )
+te$rvis4_neg_poly2 <- ifelse( te$rvis4 > 0, 0, te$rvis4^2 )
+mod0 <- glm( causal ~ rvis4 +                    rvis_miss, data=tr, family="binomial" )
+mod1 <- glm( causal ~ rvis_gt_1 + rvis_lt_neg1 + rvis_miss, data=tr, family="binomial" )
+mod2 <- glm( causal ~ rvis_gt_2 + rvis_lt_neg2 + rvis_miss, data=tr, family="binomial" )
+mod3 <- glm( causal ~ rvis_gt_3 + rvis_lt_neg3 + rvis_miss, data=tr, family="binomial" )
+mod4 <- glm( causal ~ rvis_gt_4 + rvis_lt_neg4 + rvis_miss, data=tr, family="binomial" )
+mod5 <- glm( causal ~ rvis4_pos + rvis4_neg    + rvis_miss, data=tr, family="binomial" )
+dev_exp(mod0)
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+dev_exp(mod4)
+dev_exp(mod5)
+AIC(mod0); AIC(mod3); AIC(mod5)
+summary(mod1)$coef
+summary(mod2)$coef
+summary(mod3)$coef
+summary(mod4)$coef
+summary(mod5)$coef
+
+# pLI
+mod1 <- glm( causal ~ pLI,                               data=tr, family="binomial" )
+mod2 <- glm( causal ~ pLI_lt_0.1,                        data=tr, family="binomial" )
+mod3 <- glm( causal ~ pLI_lt_0.1 + pLI_gt_0.9,           data=tr, family="binomial" )
+mod4 <- glm( causal ~ pLI_log10OR,                       data=tr, family="binomial" )
+mod5 <- glm( causal ~ pLI_log10OR_neg,                   data=tr, family="binomial" )
+mod6 <- glm( causal ~ pLI_log10OR_neg + pLI_log10OR_pos, data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+dev_exp(mod4)
+dev_exp(mod5)
+dev_exp(mod6)
+AIC(mod1); AIC(mod2); AIC(mod3); AIC(mod4); AIC(mod5); AIC(mod6)
+summary(mod1)$coef
+summary(mod2)$coef
+summary(mod3)$coef
+summary(mod4)$coef
+summary(mod5)$coef
+summary(mod6)$coef
+
+# PPI
+mod1 <- glm( causal ~ PPI_degree_quantile, data=tr, family="binomial" )
+mod2 <- glm( causal ~ PPI_degree_decile,   data=tr, family="binomial" )
+mod3 <- glm( causal ~ PPI_degree_cat,      data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
+
+# Connectedness
+mod1 <- glm( causal ~ connect_quantile, data=tr, family="binomial" )
+mod2 <- glm( causal ~ connect_decile,   data=tr, family="binomial" )
+mod3 <- glm( causal ~ connectedness,    data=tr, family="binomial" )
+dev_exp(mod1)
+dev_exp(mod2)
+dev_exp(mod3)
 
 
 #-------------------------------------------------------------------------------
