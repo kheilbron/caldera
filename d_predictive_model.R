@@ -9,6 +9,25 @@
 #   simple_functions
 #-------------------------------------------------------------------------------
 
+# aucpr.conf.int.expit: Calculates a logit 95% CI for an AUPRC
+aucpr.conf.int.expit <- function( estimate, num.pos, conf.level=0.95 ){
+  
+  ## convert to logit scale
+  est.logit = log(estimate/(1-estimate))
+  
+  ## standard error (from Kevin Eng)
+  se.logit = sqrt( estimate * (1-estimate) / num.pos ) * ( 1/estimate + 1/(1-estimate) )
+  
+  ## confidence interval in logit
+  ci.logit = est.logit + qnorm( c( (1-conf.level)/2, (1+conf.level)/2) ) * se.logit
+  
+  ## back to original scale
+  ci = exp(ci.logit)/(1+exp(ci.logit))
+  attr(ci,"conf.level") = conf.level
+  attr(ci,"method") = "expit"
+  return(ci)
+}
+
 # ci95_lo and ci95_hi: Return the lower/upper 95% confidence interval
 ci95_lo <- function( beta, se, zcrit=qnorm(.025, lower.tail=FALSE) )  beta - zcrit * se
 ci95_hi <- function( beta, se, zcrit=qnorm(.025, lower.tail=FALSE) )  beta + zcrit * se
@@ -171,14 +190,24 @@ forest_plot <- function( df, value.col="effect", lo.col="lo", hi.col="hi",
 #   glm_to_forest:   Make a forest plot from a GLM object
 #-------------------------------------------------------------------------------
 
-glm_to_forest <- function( mod, mtext=TRUE, xmax=NULL ){
+glm_to_forest <- function( mod, suffix="TRUE", mtext=TRUE, xmax=NULL, 
+                           standardize=FALSE ){
   
   # Clean up row and column names
   mod2 <- as.data.frame( summary(mod)$coef[ -1, , drop=FALSE ] )
   names(mod2) <- c( "effect", "se", "z", "p" )
-  mod3 <- mod2[ grepl( pattern="TRUE$", row.names(mod2) ) , ]
-  row.names(mod3) <- sub( "TRUE$", "", row.names(mod3) )
-  row.names(mod3) <- sub( "_bil$", "", row.names(mod3) )
+  pattern <- paste0( suffix, "$" )
+  mod3 <- mod2[ grepl( pattern=pattern, row.names(mod2) ) , ]
+  full_names  <- row.names(mod3)
+  short_names <- sub( pattern, "", row.names(mod3) )
+  row.names(mod3) <- short_names
+  
+  # If specified, standardize effects to reflect a 1 SD change
+  if(standardize){
+    stddevs <- apply( X=mod$model, MARGIN=2, FUN=sd )[-1]
+    mod3$effect <- mod3$effect * stddevs
+    mod3$se     <- mod3$se     * stddevs
+  }
   
   # Add columns for plotting
   mod3$or <- exp(mod3$effect)
@@ -231,7 +260,8 @@ glm_to_forest_p <- function( mod, suffix="", mtext=TRUE, xmax=NULL ){
 #   lasso_to_forest: Make a forest plot from a LASSO object
 #-------------------------------------------------------------------------------
 
-lasso_to_forest <- function( las, xmax=NULL ){
+lasso_to_forest <- function( las, standardize=TRUE, train=NULL, xmax=NULL ){
+  
   idx <- which( las$lambda == las$lambda.min )
   las_vec  <- exp( las$glmnet.fit$beta[ , idx ] )
   las_vec2 <- las_vec[ grepl( pattern="_bil$", names(las_vec) ) ]
@@ -242,6 +272,111 @@ lasso_to_forest <- function( las, xmax=NULL ){
                margins=c(5,9,1,1), vert.line.pos=1, xmax=xmax,
                value.col="or", lo.col="or", hi.col="or", mtext.col=NULL )
   par( mar=c(5,5,4,1) )
+  
+  # Extract coefficients
+  mod1 <- as.data.frame( coef( object=las, s="lambda.1se" )[ -1, ] )
+  names(mod1) <- "effect"
+  
+  # If specified, standardize coefficients to reflect a 1 SD change
+  if(standardize){
+    feat_cols <- las$glmnet.fit$beta@Dimnames[[1]]
+    stddevs <- apply( X=train[ , ..feat_cols ], MARGIN=2, FUN=sd )
+    mod1$effect <- mod1$effect * stddevs
+  }
+  
+  # Remove dropped features
+  mod3 <- mod1[ mod1$effect !=0 , , drop=FALSE ]
+  
+  # Add columns for plotting
+  mod3$or <- exp(mod3$effect)
+  mod3$col <- brewer.pal( n=3, name="Greens" )[3]
+  mod3 <- mod3[ order(-mod3$effect) , ]
+  
+  # Plot
+  forest_plot( df=mod3, colour.col="col", xlab="Odds ratio", xmin=0.8, xmax=xmax, 
+               margins=c(5,9,1,6), vert.line.pos=1, mtext.col=NULL,
+               value.col="or", lo.col="or", hi.col="or" )
+  par( mar=c(5,5,4,1) )
+}
+
+
+#-------------------------------------------------------------------------------
+#   n_inc_las:       Plot % of LASSO LOTO models containing each feature
+#-------------------------------------------------------------------------------
+
+n_inc_las <- function(loto_obj){
+  
+  # Extract whether a feature is present or not
+  out <- list()
+  for( i in loto_obj$trait ){
+    sub <- loto_obj$model$lasso[[i]]
+    sub2 <- sub$glmnet.fit$beta[ , sub$index[2] ]
+    out[[i]] <- sub2 != 0
+  }
+  out2 <- as.data.frame( do.call( rbind, out ) )
+  
+  # Aggregate across traits
+  out3 <- sort( colSums(out2) / NROW(out2), decreasing=TRUE )
+  out4 <- data.frame( row.names=names(out3), inc=out3 )
+  out4$col <- ifelse( out4$inc >= 0.25, "lightgreen", "grey" )
+  out4$col[ out4$inc >= 0.5 ] <- "#70AD47"
+  forest_plot( df=out4, xlab="Proportion included in LASSO model", colour.col="col",
+               margins=c(5,11,4,1), vert.line.pos=c(0,1), mtext.col=NULL, 
+               value.col="inc", lo.col="inc", hi.col="inc", xmax=1, main="LASSO" )
+  
+  # Aggregate across groups of traits
+  groups <- sub( pattern="_bil$|_glo$|_rel$", replacement="", x=names(out3) )
+  out5 <- sort( tapply( X=out3, INDEX=groups, FUN=mean ), decreasing=TRUE )
+  out6 <- data.frame( row.names=names(out5), inc=out5 )
+  out6$col <- ifelse( out6$inc >= 0.25, "lightgreen", "grey" )
+  out6$col[ out6$inc >= 0.5 ] <- "#70AD47"
+  forest_plot( df=out6, xlab="Proportion included in LASSO model", colour.col="col",
+               margins=c(5,11,4,1), vert.line.pos=c(0,1), mtext.col=NULL, 
+               value.col="inc", lo.col="inc", hi.col="inc", xmax=1, main="LASSO" )
+}
+
+
+#-------------------------------------------------------------------------------
+#   train_xgb:       Train an XGBoost model
+#-------------------------------------------------------------------------------
+
+train_xgb <- function( data, feat_cols, bias_cols=NULL, glc_cols=NULL, 
+                       rm_glc=FALSE, maxit=20 ){
+  
+  # Remove potentially-biased covariates from the feature list
+  feat_cols <- setdiff( feat_cols, bias_cols )
+  
+  # If specified, remove gene-level covariates
+  if(rm_glc){
+    feat_cols <- setdiff( feat_cols, glc_cols )
+  }
+  
+  # XGBoost (basic hyperparameter tuning): raw
+  tr_data <- data.frame( causal=as.factor( as.integer( data[["causal"]] ) ), 
+                         model.matrix( ~.+1, data=data[ , ..feat_cols ] ) )
+  tr_task <- makeClassifTask( data=tr_data, target="causal" )
+  lrn <- makeLearner( cl="classif.xgboost", predict.type="prob",
+                      objective="binary:logistic", verbose=0 )
+  rdesc <- makeResampleDesc( "CV", stratify=TRUE, iters=5L )
+  parallelStartSocket( cpus=detectCores() )
+  pars <- makeParamSet( makeDiscreteParam( "booster",          values = "gbtree" ), 
+                        makeIntegerParam(  "nrounds",          lower = 50L,  upper = 200L ), 
+                        makeNumericParam(  "eta",              lower = 0.01, upper = 0.4 ), 
+                        makeIntegerParam(  "max_depth",        lower = 3L,   upper = 10L ), 
+                        makeNumericParam(  "min_child_weight", lower = 1L,   upper = 10L ), 
+                        makeNumericParam(  "subsample",        lower = 0.5,  upper = 1 ), 
+                        makeNumericParam(  "colsample_bytree", lower = 0.5,  upper = 1 ) )
+  ctrl <- makeTuneControlRandom( maxit=maxit )
+  mytune <- tuneParams( learner    = lrn, 
+                        task       = tr_task, 
+                        measures   = logloss,
+                        resampling = rdesc, 
+                        par.set    = pars, 
+                        control    = ctrl, 
+                        show.info  = TRUE )
+  lrn_tune <- setHyperPars( lrn, par.vals=mytune$x )
+  xgb_mod <- train( learner=lrn_tune, task=tr_task )
+  return(xgb_mod)
 }
 
 
@@ -265,6 +400,23 @@ xgb_to_forest <- function( xgb_mod, suffix="_bilTRUE", xmax=NULL ){
   par( mar=c(5,5,4,1) )
 }
 
+
+#-------------------------------------------------------------------------------
+#   plot_fi:         Plot grouped feature importance
+#-------------------------------------------------------------------------------
+
+plot_fi <- function(xgb_mod){
+  fi <- getFeatureImportance(xgb_mod)$res[-1,]
+  fi$group <- sub( pattern="_bilTRUE$|_glo$|_rel$", replacement="", x=fi$variable )
+  fi2 <- sort( tapply( X=fi$importance, INDEX=fi$group, FUN=sum ), decreasing=TRUE )
+  fi3 <- data.frame( row.names=names(fi2), fi=fi2, cumsum=cumsum(fi2) )
+  fi3$col <- ifelse( fi3$cumsum < 0.99, "lightgreen", "grey" )
+  fi3$col[ fi3$cumsum < 0.9 ] <- "#70AD47"
+  forest_plot( df=fi3, xlab="Feature importance", colour.col="col", main="XGBoost",
+               margins=c(5,9,4,1), vert.line.pos=0, mtext.col=NULL, 
+               value.col="fi", lo.col="fi", hi.col="fi", xmax=NULL )
+  par( mar=c(5,5,4,1) )
+}
 
 #-------------------------------------------------------------------------------
 #   auprc_test_set:  Barplot of AUPRCs from a GLM, LASSO, and XGBoost model
@@ -431,12 +583,11 @@ plot_pr <- function( model, test_df, p=0.78, r=0.34, v=0.75,
 }
 
 
-
 #-------------------------------------------------------------------------------
 #   loto:            Leave-one-trait-out models, PR curves, and predictions
 #-------------------------------------------------------------------------------
 
-loto <- function( data, feat_cols, backwards_selection=FALSE,
+loto <- function( data, method, feat_cols, backwards_selection=FALSE, maxit=10,
                   bias_cols=NULL, glc_cols=NULL, rm_glc=FALSE ){
   
   # Format input
@@ -444,17 +595,13 @@ loto <- function( data, feat_cols, backwards_selection=FALSE,
   
   # Initialize output
   out <- list( trait    = unique(data$trait), 
-               model    = list( glm   = list(), 
-                                lasso = list(), 
-                                xgb   = list() ), 
-               pr_curve = list( glm   = list(), 
-                                lasso = list(), 
-                                xgb   = list() ),
-               preds    = data.table( trait  = data$trait,
-                                      causal = data$causal,
-                                      glm    = NA,
-                                      lasso  = NA,
-                                      xgb    = NA ) )
+               model    = list(), 
+               pr_curve = list(),
+               preds    = data.table( trait      = data$trait,
+                                      causal     = data$causal,
+                                      pred       = NA,
+                                      calibrated = NA,
+                                      scaled     = NA ) )
   
   # Loop through traits (to leave out)
   for( i in out$trait ){
@@ -470,6 +617,9 @@ loto <- function( data, feat_cols, backwards_selection=FALSE,
     # Split into training and testing sets
     trn <- data[ data$trait != i , ]
     tst <- data[ data$trait == i , ]
+    
+    # Ensure that each trait is its own fold for CV (to prevent leakage)
+    trn$foldid <- as.integer( as.factor(trn$trait) )
     
     # Fix potentially-biased covariates to their mean value in the test dataset
     for( j in bias_cols ){
@@ -491,48 +641,95 @@ loto <- function( data, feat_cols, backwards_selection=FALSE,
     #---------------------------------------------------------------------------
     
     # GLM
-    l_form <- make_formula( lhs=feat_cols[1], rhs=feat_cols[-1] )
-    l_glm0 <- glm( formula=l_form, data=trn, family="binomial" )
-    if(backwards_selection){
-      l_glm <- stats::step( object=l_glm0, k=qchisq( 1-0.05/5, df=1 ), trace=0 )
-    }else{
-      l_glm <- l_glm0
+    if( method == "glm" ){
+      l_form <- make_formula( lhs=feat_cols[1], rhs=feat_cols[-1] )
+      l_glm0 <- glm( formula=l_form, data=trn, family="binomial" )
+      if(backwards_selection){
+        l_mod <- stats::step( object=l_glm0, k=qchisq( 1-0.05/5, df=1 ), trace=0 )
+      }else{
+        l_mod <- l_glm0
+      }
     }
     
     # LASSO
-    l_las <- cv.glmnet( x=as.matrix( trn[ , ..feat_cols ] )[,-1], 
-                        y=trn[["causal"]], family="binomial", standardize=FALSE )
+    if( method %in% c( "lasso1", "lasso2" ) ){
+      l_mod <- cv.glmnet( x=as.matrix( trn[ , ..feat_cols ] )[,-1],
+                          y=trn[["causal"]], family="binomial", 
+                          foldid=trn$foldid, alpha=1 )
+    }
+    
+    # Elastic net
+    if( method %in% c( "elnet1", "elnet2" ) ){
+      l_mod <- cv.glmnet( x=as.matrix( trn[ , ..feat_cols ] )[,-1], 
+                          y=trn[["causal"]], family="binomial", 
+                          nfolds=14, alpha=0.5 )
+    }
     
     # XGB
-    l_xgb <- suppressMessages( suppressWarnings(
-      train_xgb( data=trn, feat_cols=xgb_cols[-1], maxit=10 ) ) )
+    if( method == "xgb" ){
+      l_mod <- suppressMessages( suppressWarnings(
+        train_xgb( data=trn, feat_cols=xgb_cols[-1], maxit=maxit ) ) )
+    }
     
+    
+    #---------------------------------------------------------------------------
+    #   Calibrate
+    #---------------------------------------------------------------------------
+    
+    # Get model predictions, plus several calibrations
+    adj_data_tr <- recalibrate_preds( test_df=trn, model=l_mod, bias_cols=bias_cols )
+    adj_data_te <- recalibrate_preds( test_df=tst, model=l_mod, bias_cols=bias_cols )
+    
+    # Train a LASSO model to recalibrate model outputs
+    adj_mod <- recalibration_model( data=adj_data_tr )
+    
+    # Apply LASSO model to get meta-recalibrated predictions
+    pred_cols <- c( "global", "relative" )
+    adj_data_tr$modeled <- predict( object=adj_mod, s="lambda.min", type="response",
+                                    newx=as.matrix( adj_data_tr[ , ..pred_cols ] ) )
+    adj_data_te$modeled <- predict( object=adj_mod, s="lambda.min", type="response",
+                                    newx=as.matrix( adj_data_te[ , ..pred_cols ] ) )
     
     #---------------------------------------------------------------------------
     #   Test models
     #---------------------------------------------------------------------------
     
     # GLM
-    p_glm0 <- predict( object=l_glm, newdata=tst, type="response" )
-    p_glm  <- pr.curve( scores.class0 = p_glm0[  tst$causal ], 
-                        scores.class1 = p_glm0[ !tst$causal ], curve = TRUE )
+    if( method == "glm" ){
+      p_mod0 <- predict( object=l_mod, newdata=tst, type="response" )
+      p_mod  <- pr.curve( scores.class0 = p_mod0[  tst$causal ],
+                          scores.class1 = p_mod0[ !tst$causal ], curve = TRUE )
+    }
     
-    # LASSO
-    las_cols <- l_las$glmnet$beta@Dimnames[[1]]
-    p_las0 <- predict( l_las, newx=as.matrix( tst[ , ..las_cols ] ), 
-                       s="lambda.1se", type="response" )
-    p_las  <- pr.curve( scores.class0 = p_las0[  tst$causal ], 
-                        scores.class1 = p_las0[ !tst$causal ], curve = TRUE )
+    # LASSO or ElNet: lambda.1se
+    if( method %in% c( "lasso1", "elnet1" ) ){
+      las_cols <- l_mod$glmnet$beta@Dimnames[[1]]
+      p_mod0 <- predict( l_mod, newx=as.matrix( tst[ , ..las_cols ] ),
+                         s="lambda.1se", type="response" )
+      p_mod  <- pr.curve( scores.class0 = p_mod0[  tst$causal ],
+                          scores.class1 = p_mod0[ !tst$causal ], curve = TRUE )
+    }
+    
+    # LASSO or ElNet: lambda.min
+    if( method %in% c( "lasso2", "elnet2" ) ){
+      las_cols <- l_mod$glmnet$beta@Dimnames[[1]]
+      p_mod0 <- predict( l_mod, newx=as.matrix( tst[ , ..las_cols ] ),
+                         s="lambda.min", type="response" )
+      p_mod  <- pr.curve( scores.class0 = p_mod0[  tst$causal ],
+                          scores.class1 = p_mod0[ !tst$causal ], curve = TRUE )
+    }
     
     # XGB
-    xgb_cols <- sub( pattern="TRUE$", replacement="", x=l_xgb$features[-1] )
-    te_data <- data.frame( causal=as.factor( as.integer( tst[["causal"]] ) ), 
-                           model.matrix( ~.+1, data=tst[ , ..xgb_cols ] )  )
-    te_task <- makeClassifTask( data=te_data, target="causal" )
-    p_xgb0 <- predict( l_xgb, te_task )
-    p_xgb  <- pr.curve( scores.class0 = p_xgb0$data$prob.1[  tst$causal ], 
-                        scores.class1 = p_xgb0$data$prob.1[ !tst$causal ], 
-                        curve = TRUE )
+    if( method == "xgb" ){
+      xgb_cols <- sub( pattern="TRUE$", replacement="", x=l_mod$features[-1] )
+      te_data <- data.frame( causal=as.factor( as.integer( tst[["causal"]] ) ),
+                             model.matrix( ~.+1, data=tst[ , ..xgb_cols ] )  )
+      te_task <- makeClassifTask( data=te_data, target="causal" )
+      p_mod0 <- predict( l_mod, te_task )
+      p_mod  <- pr.curve( scores.class0 = p_mod0$data$prob.1[  tst$causal ],
+                          scores.class1 = p_mod0$data$prob.1[ !tst$causal ],
+                          curve = TRUE )
+    }
     
     
     #---------------------------------------------------------------------------
@@ -540,19 +737,15 @@ loto <- function( data, feat_cols, backwards_selection=FALSE,
     #---------------------------------------------------------------------------
     
     # Model
-    out$model$glm[[i]]   <- l_glm
-    out$model$lasso[[i]] <- l_las
-    out$model$xgb[[i]]   <- l_xgb
+    out$model[[i]] <- l_mod
     
     # PR curve
-    out$pr_curve$glm[[i]]   <- p_glm
-    out$pr_curve$lasso[[i]] <- p_las
-    out$pr_curve$xgb[[i]]   <- p_xgb
+    out$pr_curve[[i]] <- p_mod
     
     # Predicted probabilities
-    out$preds$glm[ out$preds$trait == i ]   <- p_glm0
-    out$preds$lasso[ out$preds$trait == i ] <- p_las0
-    out$preds$xgb[ out$preds$trait == i ]   <- p_xgb0$data$prob.1
+    out$preds$pred[       out$preds$trait == i ] <- p_mod0
+    out$preds$scaled[     out$preds$trait == i ] <- adj_data_te$scaled
+    out$preds$calibrated[ out$preds$trait == i ] <- adj_data_te$modeled
   }
   
   # Return
@@ -566,44 +759,29 @@ loto <- function( data, feat_cols, backwards_selection=FALSE,
 
 plot_loto_pr <- function(loto_obj){
   
-  # GLM
-  p_glm <- pr.curve( scores.class0 = loto_obj$preds$glm[  loto_obj$preds$causal ], 
-                     scores.class1 = loto_obj$preds$glm[ !loto_obj$preds$causal ], 
+  # Set up the plot
+  p_mod <- pr.curve( scores.class0 = loto_obj$preds$pred[  loto_obj$preds$causal ], 
+                     scores.class1 = loto_obj$preds$pred[ !loto_obj$preds$causal ], 
                      curve = TRUE )
-  plot( p_glm, color="white", las=1, legend=FALSE, main="GLM" )
-  for( i in loto_obj$trait ){
-    plot( loto_obj$pr_curve$glm[[i]], color="grey90", add=TRUE )
-  }
-  plot( p_glm, color="black", las=1, auc.main=FALSE, add=TRUE )
+  plot( p_mod, color="white", las=1, legend=FALSE )
   
-  # LASSO
-  p_las <- pr.curve( scores.class0 = loto_obj$preds$lasso[  loto_obj$preds$causal ], 
-                     scores.class1 = loto_obj$preds$lasso[ !loto_obj$preds$causal ], 
-                     curve = TRUE )
-  plot( p_las, color="white", las=1, legend=FALSE, main="LASSO" )
+  # Loop through traits, plotting individual curves and extract their AUPRC
+  pr0 <- list()
   for( i in loto_obj$trait ){
-    plot( loto_obj$pr_curve$lasso[[i]], color="grey90", add=TRUE )
+    plot( loto_obj$pr_curve[[i]], color="grey90", add=TRUE )
+    pr0[[i]] <- loto_obj$pr_curve[[i]]$auc.integral
   }
-  plot( p_las, color="black", las=1, auc.main=FALSE, add=TRUE )
+  pr <- unlist(pr0)
   
-  # XGBoost
-  xgb_cols <- sub( pattern="TRUE$", replacement="", x=l_xgb$features[-1] )
-  te_data <- data.frame( causal=as.factor( as.integer( tst[["causal"]] ) ), 
-                         model.matrix( ~.+1, data=tst[ , ..xgb_cols ] )  )
-  te_task <- makeClassifTask( data=te_data, target="causal" )
-  p_xgb0 <- predict( l_xgb, te_task )
-  p_xgb  <- pr.curve( scores.class0 = p_xgb0$data$prob.1[  tst$causal ], 
-                      scores.class1 = p_xgb0$data$prob.1[ !tst$causal ], 
-                      curve = TRUE )
+  # Add overall curve
+  plot( p_mod, color="black", las=1, add=TRUE )
   
-  p_xgb <- pr.curve( scores.class0 = loto_obj$preds$xgb[  loto_obj$preds$causal ], 
-                     scores.class1 = loto_obj$preds$xgb[ !loto_obj$preds$causal ], 
-                     curve = TRUE )
-  plot( p_xgb, color="white", las=1, legend=FALSE, main="XGBoost" )
-  for( i in loto_obj$trait ){
-    plot( loto_obj$pr_curve$xgb[[i]], color="grey90", add=TRUE )
-  }
-  plot( p_xgb, color="black", las=1, auc.main=FALSE, add=TRUE )
+  # Return AUPRC and 95% CI
+  ci <- aucpr.conf.int.expit( estimate = p_mod$auc.integral, 
+                              num.pos  = sum(loto_obj$preds$causal) )
+  names(ci) <- c( "lo", "hi" )
+  out <- c( auprc=p_mod$auc.integral, ci )
+  return(out)
 }
 
 
@@ -635,7 +813,7 @@ recalibrate_preds <- function( test_df, model,
   }else if( class(model) == "cv.glmnet" ){
     feat_cols <- model$glmnet$beta@Dimnames[[1]]
     p_mod <- predict( model, newx=as.matrix( test_df[ , ..feat_cols ] ), 
-                      s="lambda.min", type="response" )
+                      s="lambda.1se", type="response" )
     
   # XGBoost
   }else if( class(model) == "WrappedModel" ){
@@ -648,7 +826,7 @@ recalibrate_preds <- function( test_df, model,
   test_df$pred <- p_mod
   
   # Initialize output
-  out <- data.table( causal=test_df[["causal"]], original=p_mod )
+  out <- data.table( causal=test_df[["causal"]], original=as.vector(p_mod) )
   out$flames <- out$scaled <- out$scaled_up <- out$scaled_down <- out$best <- 
     out$relative <- out$global <- as.numeric(NA)
   
@@ -744,53 +922,9 @@ recalibrate_preds <- function( test_df, model,
 recalibration_model <- function(data){
   
   # Build the model to predict causal genes based on step 1 predictions
-  pred_cols <- c( "global", "relative", "best" )
+  pred_cols <- c( "global", "relative" )
   cv.glmnet( x=as.matrix( data[ , ..pred_cols ] ), 
              y=data[["causal"]], family="binomial", standardize=FALSE )
-}
-
-
-#-------------------------------------------------------------------------------
-#   train_xgb:       Train an XGBoost model
-#-------------------------------------------------------------------------------
-
-train_xgb <- function( data, feat_cols, bias_cols=NULL, glc_cols=NULL, 
-                       rm_glc=FALSE, maxit=20 ){
-  
-  # Remove potentially-biased covariates from the feature list
-  feat_cols <- setdiff( feat_cols, bias_cols )
-  
-  # If specified, remove gene-level covariates
-  if(rm_glc){
-    feat_cols <- setdiff( feat_cols, glc_cols )
-  }
-  
-  # XGBoost (basic hyperparameter tuning): raw
-  tr_data <- data.frame( causal=as.factor( as.integer( data[["causal"]] ) ), 
-                         model.matrix( ~.+1, data=data[ , ..feat_cols ] ) )
-  tr_task <- makeClassifTask( data=tr_data, target="causal" )
-  lrn <- makeLearner( cl="classif.xgboost", predict.type="prob",
-                      objective="binary:logistic", verbose=0 )
-  rdesc <- makeResampleDesc( "CV", stratify=TRUE, iters=5L )
-  parallelStartSocket( cpus=detectCores() )
-  pars <- makeParamSet( makeDiscreteParam( "booster",          values = "gbtree" ), 
-                        makeIntegerParam(  "nrounds",          lower = 50L,  upper = 200L ), 
-                        makeNumericParam(  "eta",              lower = 0.01, upper = 0.4 ), 
-                        makeIntegerParam(  "max_depth",        lower = 3L,   upper = 10L ), 
-                        makeNumericParam(  "min_child_weight", lower = 1L,   upper = 10L ), 
-                        makeNumericParam(  "subsample",        lower = 0.5,  upper = 1 ), 
-                        makeNumericParam(  "colsample_bytree", lower = 0.5,  upper = 1 ) )
-  ctrl <- makeTuneControlRandom( maxit=maxit )
-  mytune <- tuneParams( learner    = lrn, 
-                        task       = tr_task, 
-                        measures   = logloss,
-                        resampling = rdesc, 
-                        par.set    = pars, 
-                        control    = ctrl, 
-                        show.info  = TRUE )
-  lrn_tune <- setHyperPars( lrn, par.vals=mytune$x )
-  xgb_mod <- train( learner=lrn_tune, task=tr_task )
-  return(xgb_mod)
 }
 
 
@@ -1091,152 +1225,6 @@ plot_logOR_relationship_smooth( data=tr, varname="netwas_bon_score_glo" )
 
 
 #-------------------------------------------------------------------------------
-#   Do I need a covariate in the model to account for the fact that different
-#   traits have different power for POPS?
-#-------------------------------------------------------------------------------
-
-# Look at correlation between mean, SD, skewness, and kurtosis across traits
-pl <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=function(x) length( unique(x) ) )
-pm <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=mean )
-pv <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=var )
-ps <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=skewness )
-pk <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=kurtosis )
-barplot( sort(pl), las=2, col=viridis( length(pm) ) )
-barplot( sort(pm), las=2, col=viridis( length(pm) ) )
-barplot( sort(pv), las=2, col=viridis( length(pm) ) )
-barplot( sort(ps), las=2, col=viridis( length(pm) ) )
-barplot( sort(pk), las=2, col=viridis( length(pm) ) )
-corrplot( cor( cbind( pl, pm, pv, ps, pk ) ) )
-
-# eCDF
-plot( ecdf(tr$pops_glo), col="white", las=1 )
-for( i in names( sort(pl) ) ){
-  sub <- tr[ tr$trait == i , ]
-  plot( ecdf(sub$pops_glo), add=TRUE, 
-        col=viridis( n=length(pl) )[ which( names( sort(pl) ) == i)] )
-}
-
-# Make columns for the value
-tr$n_tcp     <- pl[ match( tr$trait, names(pl) ) ]
-tr$pops_mean <- pm[ match( tr$trait, names(pm) ) ]
-tr$pops_var   <- pv[ match( tr$trait, names(pv) ) ]
-tr$pops_skew <- ps[ match( tr$trait, names(ps) ) ]
-
-# Make models with just the trait-level covariate
-summary( glm( causal ~ n_tcp,     data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_mean, data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_var,  data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_skew, data=tr, family="binomial" ) )$coef
-
-# Make models with pops_glo + the trait-level covariate
-summary( glm( causal ~ pops_glo,             data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + n_tcp,     data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + pops_mean, data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + pops_var,  data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + pops_skew, data=tr, family="binomial" ) )$coef
-
-# Add trait-level covariates to the basic model
-t_form <- update( sg_form, . ~ . + n_tcp )
-t_form <- update( sg_form, . ~ . + pops_mean )
-t_form <- update( sg_form, . ~ . + pops_var )
-t_form <- update( sg_form, . ~ . + pops_skew )
-t_glm  <- glm( t_form, data=tr, family="binomial" )
-summary(t_glm)$coef
-glm_to_forest_p( mod=t_glm, suffix="" )
-
-# Add an interaction
-t_form <- update( sg_form, . ~ . + pops_glo*n_tcp )
-t_form <- update( sg_form, . ~ . + pops_glo*pops_mean )
-t_form <- update( sg_form, . ~ . + pops_glo*pops_var )
-t_form <- update( sg_form, . ~ . + pops_glo*pops_skew )
-t_glm  <- glm( t_form, data=tr, family="binomial" )
-summary(t_glm)$coef
-glm_to_forest_p( mod=t_glm, suffix="" )
-
-# Look at how P(causal) looks at 25th, 50th, and 75th percentile...
-# ...for both pops_glo and pops_mean. Assuming other variables are at their mean.
-cm <- colMeans( x=tr[ , ..sg_cols ] )
-df <- as.data.frame( matrix( rep( cm, 9), nrow=9, byrow=TRUE ) )
-names(df) <- names(cm)
-df$pops_glo  <- rep( quantile( tr$pops_glo, probs=c( 0.1, 0.5, 0.9 ) ), 3 )
-df$pops_mean <- rep( quantile( tr$pops_mean, probs=c( 0.1, 0.5, 0.9 ) ), 
-                     rep( 3, 3 ) )
-df$pops_rel  <- 0
-df$pops_bil  <- 1
-df$dist_gene_rel <- 3
-pred <- predict( object=t_glm, newdata=df, se=TRUE )
-df$p_causal <- logistic(pred$fit)
-
-# Plot
-plot( df$pops_glo, df$p_causal, type="n", las=1, ylim=c( 0, max(df$p_causal) ),
-      xlab="pops_glo", ylab="P(causal)" )
-cols <- viridis(3)
-for( i in unique(df$pops_mean) ){
-  sub <- df[ df$pops_mean == i , ]
-  idx <- which( unique(df$pops_mean) == i )
-  lines( sub$pops_glo, sub$p_causal, col=cols[idx], lwd=3 )
-}
-legend( "topleft", legend=paste( "Mean PoPS:", c( "10th", "50th", "90th" ) ), fill=cols )
-
-
-#-------------------------------------------------------------------------------
-#   Do I need a covariate in the model to account for the fact that different
-#   traits have different power for MAGMA?
-#-------------------------------------------------------------------------------
-
-# Look at correlation between mean, SD, skewness, and kurtosis across traits
-mm <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=mean )
-mv <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=var )
-ms <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=skewness )
-mk <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=kurtosis )
-barplot( sort(mm), las=2, col=viridis( length(pm) ) )
-barplot( sort(mv), las=2, col=viridis( length(pm) ) )
-barplot( sort(ms), las=2, col=viridis( length(pm) ) )
-barplot( sort(mk), las=2, col=viridis( length(pm) ) )
-corrplot( cor( cbind( mm, mv, ms, mk ) ) )
-
-# eCDF
-plot( ecdf(tr$magma_rel), col="white", las=1 )
-for( i in names( sort(pl) ) ){
-  sub <- tr[ tr$trait == i , ]
-  plot( ecdf(sub$magma_rel), add=TRUE, 
-        col=viridis( n=length(pl) )[ which( names( sort(pl) ) == i)] )
-}
-
-# Make columns for the value
-tr$mag_rel_mean <- mm[ match( tr$trait, names(mm) ) ]
-tr$mag_rel_var  <- mv[ match( tr$trait, names(mv) ) ]
-tr$mag_rel_skew <- ms[ match( tr$trait, names(ms) ) ]
-
-# Make models with just the trait-level covariate
-summary( glm( causal ~ mag_rel_mean, data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ mag_rel_var,  data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ mag_rel_skew, data=tr, family="binomial" ) )$coef
-
-# Make models with magma_rel + the trait-level covariate
-summary( glm( causal ~ magma_rel,                data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ magma_rel + mag_rel_mean, data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ magma_rel + mag_rel_var,  data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ magma_rel + mag_rel_skew, data=tr, family="binomial" ) )$coef
-
-# Add trait-level covariates to the basic model
-t_form <- update( sg_form, . ~ . + mag_rel_mean )
-t_form <- update( sg_form, . ~ . + mag_rel_var )
-t_form <- update( sg_form, . ~ . + mag_rel_skew )
-t_glm  <- glm( t_form, data=tr, family="binomial" )
-summary(t_glm)$coef
-glm_to_forest_p( mod=t_glm, suffix="" )
-
-# Add an interaction
-t_form <- update( sg_form, . ~ . + magma_rel*mag_rel_mean )
-t_form <- update( sg_form, . ~ . + magma_rel*mag_rel_var )
-t_form <- update( sg_form, . ~ . + magma_rel*mag_rel_skew )
-t_glm  <- glm( t_form, data=tr, family="binomial" )
-summary(t_glm)$coef
-glm_to_forest_p( mod=t_glm, suffix="" )
-
-
-#-------------------------------------------------------------------------------
 #   Compare competing feature definitions
 #-------------------------------------------------------------------------------
 
@@ -1485,7 +1473,7 @@ corrplot( v2g_cor( data=tr, prefix="abc" ) )
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
-#   GLM
+#   LOTO
 #-------------------------------------------------------------------------------
 
 # Global features
@@ -1513,6 +1501,45 @@ f_cols <- unique( c( a_cols, glo_cols, rel_cols, "prior_n_genes_locus" ) )
 # Raw feature correlations
 corrplot( cor( tr[ , ..f_cols ][,-1] ), order="hclust" )
 
+# PR curve
+# f_loto <- loto( data=tr, feat_cols=f_cols, backwards_selection=TRUE, maxit=100 )
+# saveRDS( object=f_loto, file=file.path( maindir, "loto_full.rds" ) )
+# f_loto <- readRDS( file=file.path( maindir, "loto_full.rds" ) )
+# f_pr   <- plot_loto_pr(f_loto)
+# n_inc_las(f_loto)
+
+# Run LOTO
+# fl_glm  <- loto( data=tr, method="glm",    feat_cols=f_cols, 
+#                  backwards_selection=TRUE )
+# saveRDS( object=fl_glm, file=file.path( maindir, "loto_full_glm.rds" ) )
+fl_glm  <- readRDS( file=file.path( maindir, "loto_full_glm.rds" ) )
+fl_las1 <- loto( data=tr, method="lasso1", feat_cols=f_cols )
+fl_las2 <- loto( data=tr, method="lasso2", feat_cols=f_cols )
+# fl_xgb  <- loto( data=tr, method="xgb",    feat_cols=f_cols, maxit=100 )
+# saveRDS( object=fl_xgb, file=file.path( maindir, "loto_full_xgb.rds" ) )
+fl_xgb  <- readRDS( file=file.path( maindir, "loto_full_xgb.rds" ) )
+
+# Plot
+fl_glm_pr  <- plot_loto_pr(fl_glm)
+fl_las1_pr <- plot_loto_pr(fl_las1)
+fl_las2_pr <- plot_loto_pr(fl_las2)
+fl_xgb_pr  <- plot_loto_pr(fl_xgb)
+
+# AUPRCs
+f_pr <- rbind( fl_glm_pr, fl_las1_pr, fl_las2_pr, fl_xgb_pr )
+dimnames(f_pr)[[1]] <- c( "GLM", "LASSO1", "LASSO2", "XGBoost" )
+bp <- barplot( height=f_pr[,"auprc"], las=1, ylim=c( 0, max(f_pr) ),
+               col=brewer.pal( n=NROW(f_pr), name="Greens" ) )
+for( i in seq_along(bp) ){
+  lines( x = c( bp[i],           bp[i] ), lwd=1.5,
+         y = c( f_pr[ i, "lo" ], f_pr[ i, "hi" ] ) )
+}
+
+
+#-------------------------------------------------------------------------------
+#   GLM
+#-------------------------------------------------------------------------------
+
 # Run regression
 f_form <- make_formula( lhs=f_cols[1], rhs=f_cols[-1] )
 f_glm  <- glm( formula=f_form, data=tr, family="binomial" )
@@ -1534,8 +1561,10 @@ f_las <- cv.glmnet( x=as.matrix( tr[ , ..f_cols ] )[,-1],
 #   XGBoost
 #-------------------------------------------------------------------------------
 
+# Run
 t0 <- proc.time()
 f_xgb <- train_xgb( data=tr, feat_cols=f_cols[-1], maxit=100 )
+plot_fi(f_xgb)
 t1 <- proc.time()
 t1-t0
 
@@ -1558,241 +1587,67 @@ plot_pr( model=f_xgb, test_df=te )
 
 
 #-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Basic model: Only use features derived from 5 methods
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
 #   LOTO
 #-------------------------------------------------------------------------------
 
-# PR curve
-f_loto <- loto( data=tr, feat_cols=f_cols )
-plot_loto_pr( loto_obj = f_loto )
+# Raw feature correlations
+pattern <- "^causal$|^pops_|^dist_gene_|^magma_|^coding_|^prior"
+s_cols  <- grep( pattern=pattern, x=f_cols, value=TRUE )
+corrplot( cor( tr[ , ..s_cols ][,-1] ), order="hclust" )
 
-# Plot aggregated feature importances
-xgb_mod=f_xgb
-fi <- getFeatureImportance(xgb_mod)$res[-1,]
-fi$group <- sub( pattern="_bilTRUE$|_glo$|_rel$", replacement="", x=fi$variable )
-fi2 <- sort( tapply( X=fi$importance, INDEX=fi$group, FUN=sum ), decreasing=TRUE )
-fi3 <- data.frame( row.names=names(fi2), fi=fi2, cumsum=cumsum(fi2) )
-fi3$col <- ifelse( fi3$cumsum < 0.99, "lightgreen", "grey" )
-fi3$col[ fi3$cumsum < 0.9 ] <- "#70AD47"
-forest_plot( df=fi3, xlab="Feature importance", colour.col="col", main="XGBoost",
-             margins=c(5,9,4,1), vert.line.pos=0, mtext.col=NULL, 
-             value.col="fi", lo.col="fi", hi.col="fi", xmax=NULL )
-par( mar=c(5,5,4,1) )
+# Run
+# s_loto <- loto( data=tr, feat_cols=s_cols, backwards_selection=TRUE, maxit=100 )
+# saveRDS( object=s_loto, file=file.path( maindir, "loto_basic.rds" ) )
+# s_loto <- readRDS( file=file.path( maindir, "loto_basic.rds" ) )
+# s_pr   <- plot_loto_pr(s_loto)
+# n_inc_las(s_loto)
 
-# Plot LASSO inclusion
-stddev <- apply( X=tr[ , ..f_cols ], MARGIN=2, FUN=sd )[-1]
-beta   <- f_las$glmnet.fit$beta[ , f_las$index[2] ]
-beta2  <- beta / stddev
-beta3  <- sort( beta2[ beta2 != 0 ], decreasing=TRUE )
-beta4  <- data.frame( row.names=names(beta3), beta=beta3 )
-beta4$cumsum <- cumsum(beta4$beta) / sum(beta4$beta)
-forest_plot( df=beta4, xlab="Standardized coefficient", 
-             margins=c(5,11,4,1), vert.line.pos=0, mtext.col=NULL, 
-             value.col="beta", lo.col="beta", hi.col="beta", xmax=NULL )
-par( mar=c(5,5,4,1) )
+# Run LOTO
+# sl_glm  <- loto( data=tr, method="glm",    feat_cols=s_cols, 
+#                  backwards_selection=TRUE )
+# saveRDS( object=sl_glm, file=file.path( maindir, "loto_basic_glm.rds" ) )
+sl_glm  <- readRDS( file=file.path( maindir, "loto_basic_glm.rds" ) )
+sl_las1 <- loto( data=tr, method="lasso1", feat_cols=s_cols )
+sl_las2 <- loto( data=tr, method="lasso2", feat_cols=s_cols )
+# sl_xgb  <- loto( data=tr, method="xgb",    feat_cols=s_cols, maxit=100 )
+# saveRDS( object=sl_xgb, file=file.path( maindir, "loto_basic_xgb.rds" ) )
+sl_xgb  <- readRDS( file=file.path( maindir, "loto_basic_xgb.rds" ) )
 
+# Plot
+sl_glm_pr  <- plot_loto_pr(sl_glm)
+sl_las1_pr <- plot_loto_pr(sl_las1)
+sl_las2_pr <- plot_loto_pr(sl_las2)
+sl_xgb_pr  <- plot_loto_pr(sl_xgb)
 
-# Number of times a variable is included in LASSO model selection during LOTO
-loto_obj <- f_loto
-n_inc_las <- function(loto_obj){
-  
-  # Extract whether a feature is present or not
-  out <- list()
-  for( i in f_loto$trait ){
-    sub <- f_loto$model$lasso[[i]]
-    sub2 <- sub$glmnet.fit$beta[ , sub$index[2] ]
-    out[[i]] <- sub2 != 0
-  }
-  out2 <- as.data.frame( do.call( rbind, out ) )
-  
-  # Aggregate across traits
-  out3 <- sort( colSums(out2) / NROW(out2), decreasing=TRUE )
-  out4 <- data.frame( row.names=names(out3), inc=out3 )
-  forest_plot( df=out4, xlab="Proportion included in LASSO model", 
-               margins=c(5,11,4,1), vert.line.pos=c(0,1), mtext.col=NULL, 
-               value.col="inc", lo.col="inc", hi.col="inc", xmax=1, main="LASSO" )
-  
-  # Aggregate across groups of traits
-  groups <- sub( pattern="_bil$|_glo$|_rel$", replacement="", x=names(out3) )
-  out5 <- sort( tapply( X=out3, INDEX=groups, FUN=mean ), decreasing=TRUE )
-  out6 <- data.frame( row.names=names(out5), inc=out5 )
-  out6$col <- ifelse( out6$inc >= 0.25, "lightgreen", "grey" )
-  out6$col[ out6$inc >= 0.5 ] <- "#70AD47"
-  forest_plot( df=out6, xlab="Proportion included in LASSO model", colour.col="col",
-               margins=c(5,11,4,1), vert.line.pos=c(0,1), mtext.col=NULL, 
-               value.col="inc", lo.col="inc", hi.col="inc", xmax=1, main="LASSO" )
+# AUPRCs
+s_pr <- rbind( sl_glm_pr, sl_las1_pr, sl_las2_pr, sl_xgb_pr )
+dimnames(s_pr)[[1]] <- c( "GLM", "LASSO1", "LASSO2", "XGBoost" )
+bp <- barplot( height=s_pr[,"auprc"], las=2, ylim=c( 0, max(s_pr) ),
+               col=brewer.pal( n=NROW(s_pr), name="Greens" ) )
+for( i in seq_along(bp) ){
+  lines( x = c( bp[i],           bp[i] ), lwd=1.5,
+         y = c( s_pr[ i, "lo" ], s_pr[ i, "hi" ] ) )
 }
 
 
 #-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   "Reduced model": Maximize performance while minimizing the number of features
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   Model selection
-#-------------------------------------------------------------------------------
-
-# To speed things up, let's get rid of some features that are never included
-pattern <- "corr_and_|corr_uli_|pchic_|clpp_|smr_|abc_"
-f_speed_cols <- grep( pattern=pattern, x=f_cols, invert=TRUE, value=TRUE )
-f_speed_form <- make_formula( lhs=f_speed_cols[1], rhs=f_speed_cols[-1] )
-f_speed_glm  <- glm( formula=f_speed_form, data=tr, family="binomial" )
-
-# Perform backwards stepwise model selection
-# Remove features predicted to have P > 0.05/5
-o_glm0 <- stats::step( object=f_speed_glm, k=qchisq( 1-0.05/5, df=1 ) )
-
-# Hard-coded list of features that passed model selection
-o_cols0 <- c( "causal",
-              "pops_glo", "pops_rel",
-              "dist_gene_rel", 
-              "magma_rel",
-              "coding_glo", "coding_rel", 
-              "prior_n_genes_locus",
-              "twas_bil", 
-              "corr_liu_glo", "corr_liu_rel", 
-              "netwas_bon_score_rel" )
-
-# Manually make models and drop terms that are not Bonferroni-significant
-o_cols1 <- c( "causal",
-              "pops_glo", "pops_rel",
-              "dist_gene_rel", 
-              "magma_rel",
-              "coding_glo", "coding_rel", 
-              "prior_n_genes_locus",
-              "twas_bil", 
-              "corr_liu_glo" )
-
-# Run regression
-o_form1 <- make_formula( lhs=o_cols1[1], rhs=o_cols1[-1] )
-o_glm1  <- glm( formula=o_form1, data=tr, family="binomial" )
-
-# Forest plot
-glm_to_forest_p( mod=o_glm1, xmax=NULL )
-
-
-#-------------------------------------------------------------------------------
 #   GLM
 #-------------------------------------------------------------------------------
-
-# "Reduced" list of selected faeatures
-o_cols <- c( "causal",
-             "pops_glo", "pops_rel",
-             "dist_gene_rel", 
-             "magma_rel",
-             "coding_glo", "coding_rel", 
-             "prior_n_genes_locus",
-             "twas_bil", 
-             "corr_liu_glo" )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..o_cols ][,-1] ), order="hclust" )
-
-# Run regression
-o_form <- make_formula( lhs=o_cols[1], rhs=o_cols[-1] )
-o_glm  <- glm( formula=o_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_o_glm <- dev_exp(o_glm)
-dev_exp( model=o_glm, in_sample=TRUE  ) / dev_exp( model=f_glm, in_sample=TRUE )
-dev_exp( model=o_glm, in_sample=FALSE ) / dev_exp( model=f_glm, in_sample=FALSE )
-
-# Forest plot
-glm_to_forest_p( mod=o_glm, xmax=NULL )
-
-
-#-------------------------------------------------------------------------------
-#   LASSO
-#-------------------------------------------------------------------------------
-
-# Make LASSO model
-o_las <- cv.glmnet( x=as.matrix( tr[ , ..o_cols ] )[,-1], 
-                    y=tr[["causal"]], family="binomial", standardize=FALSE )
-
-
-#-------------------------------------------------------------------------------
-#   XGBoost
-#-------------------------------------------------------------------------------
-
-t0 <- proc.time()
-o_xgb <- train_xgb( data=tr, feat_cols=o_cols[-1], maxit=100 )
-t1 <- proc.time()
-t1-t0
-xgb_to_forest( xgb_mod=o_xgb, suffix="", xmax=NULL )
-
-
-#-------------------------------------------------------------------------------
-#   Assess performance of the models in the test set
-#-------------------------------------------------------------------------------
-
-# AUPRC
-o_pr <- auprc_test_set( test_df  = te, 
-                        rand_mod = rand_mod,
-                        glm_mod  = o_glm, 
-                        las_mod  = o_las, 
-                        xgb_mod  = o_xgb, 
-                        ymax     = 1 )
-f_pr; o_pr; o_pr/f_pr
-
-# PR curves
-plot_pr( model=o_glm, test_df=te )
-plot_pr( model=o_xgb, test_df=te )
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Basic model: Only use features derived from 4 methods
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   Model selection
-#-------------------------------------------------------------------------------
-
-# Subset "reduced model" features to the big 4
-s_cols1 <- c( "causal",
-              "pops_glo", "pops_rel",
-              "dist_gene_rel", 
-              "magma_rel",
-              "coding_glo", "coding_rel", 
-              "prior_n_genes_locus" )
-
-# Run regression
-s_form1 <- make_formula( lhs=s_cols1[1], rhs=s_cols1[-1] )
-s_glm1  <- glm( formula=s_form1, data=tr, family="binomial" )
-
-# Forest plot
-glm_to_forest_p( mod=s_glm1, xmax=NULL )
-
-
-#-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# "Basic" list of selected features
-s_cols <- c( "causal",
-             "pops_glo", "pops_rel",
-             "dist_gene_rel", 
-             "magma_rel",
-             "coding_glo", "coding_rel", 
-             "prior_n_genes_locus" )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..s_cols ][,-1] ), order="hclust" )
 
 # Run regression
 s_form <- make_formula( lhs=s_cols[1], rhs=s_cols[-1] )
-s_glm  <- glm( formula=s_form, data=tr, family="binomial" )
-# summary(s_glm)$coef
-# saveRDS( object=s_glm, file=file.path( maindir, "scz_glm.rds" ) )
+s_glm0 <- glm( formula=s_form, data=tr, family="binomial" )
+s_glm  <- stats::step( object=s_glm0, k=qchisq( 1-0.05/5, df=1 ), trace=0 )
 
 # Extract deviance explained
-devexp_s_glm <- dev_exp(s_glm)
 dev_exp( model=s_glm, in_sample=TRUE  ) / dev_exp( model=f_glm, in_sample=TRUE )
 dev_exp( model=s_glm, in_sample=FALSE ) / dev_exp( model=f_glm, in_sample=FALSE )
-dev_exp( model=s_glm, in_sample=TRUE  ) / dev_exp( model=o_glm, in_sample=TRUE )
-dev_exp( model=s_glm, in_sample=FALSE ) / dev_exp( model=o_glm, in_sample=FALSE )
 
 # Forest plot
 glm_to_forest_p( mod=s_glm, xmax=NULL )
@@ -1813,6 +1668,7 @@ s_las <- cv.glmnet( x=as.matrix( tr[ , ..s_cols ] )[,-1],
 
 s_xgb <- train_xgb( data=tr, feat_cols=s_cols[-1], maxit=100 )
 xgb_to_forest( xgb_mod=s_xgb, suffix="", xmax=NULL )
+plot_fi(s_xgb)
 
 
 #-------------------------------------------------------------------------------
@@ -1827,22 +1683,10 @@ s_pr <- auprc_test_set( test_df  = te,
                          xgb_mod  = s_xgb, 
                          ymax     = 1 )
 f_pr; s_pr; s_pr/f_pr
-o_pr; s_pr; s_pr/o_pr
 
 # PR curves
 plot_pr( model=s_glm, test_df=te )
 plot_pr( model=s_xgb, test_df=te )
-
-
-#-------------------------------------------------------------------------------
-#   LOTO
-#-------------------------------------------------------------------------------
-
-pattern <- "^causal$|^pops_|^dist_gene_|^magma_|^coding_|^prior"
-s_loto <- loto( data=tr, feat_cols=grep( pattern=pattern, x=f_cols, value=TRUE ), 
-                backwards_selection=TRUE )
-plot_loto_pr( loto_obj = f_loto )
-plot_loto_pr( loto_obj = s_loto )
 
 
 #-------------------------------------------------------------------------------
@@ -2084,7 +1928,7 @@ dev_exp(mod3)
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
-#   GLM
+#   LOTO
 #-------------------------------------------------------------------------------
 
 # Run a naive regression using published best-in-locus
@@ -2106,12 +1950,45 @@ fg_cols   <- c( f_cols, bias_cols, glc_cols )
 # Raw feature correlations
 corrplot( cor( tr[ , ..fg_cols ][,-1] ), order="hclust" )
 
+# Run
+# fg_loto <- loto( data=tr, feat_cols=fg_cols, backwards_selection=TRUE, maxit=100,
+#                  bias_cols=bias_cols )
+# saveRDS( object=fg_loto, file=file.path( maindir, "loto_full_glc.rds" ) )
+# fg_loto <- readRDS( file=file.path( maindir, "loto_full_glc.rds" ) )
+# fg_pr   <- plot_loto_pr(fg_loto)
+# n_inc_las(fg_loto)
+
+# Run LOTO
+# fgl_glm  <- loto( data=tr, method="glm",    feat_cols=fg_cols, bias_cols=bias_cols,
+#                  backwards_selection=TRUE )
+# saveRDS( object=fgl_glm, file=file.path( maindir, "loto_full_glc_glm.rds" ) )
+fgl_glm  <- readRDS( file=file.path( maindir, "loto_full_glc_glm.rds" ) )
+fgl_las1 <- loto( data=tr, method="lasso1", feat_cols=fg_cols, bias_cols=bias_cols )
+fgl_las2 <- loto( data=tr, method="lasso2", feat_cols=fg_cols, bias_cols=bias_cols )
+# fgl_xgb  <- loto( data=tr, method="xgb",    feat_cols=fg_cols, bias_cols=bias_cols, 
+#                   maxit=100 )
+# saveRDS( object=fgl_xgb, file=file.path( maindir, "loto_full_glc_xgb.rds" ) )
+fgl_xgb  <- readRDS( file=file.path( maindir, "loto_full_glc_xgb.rds" ) )
+
+# Plot
+fgl_glm_pr  <- plot_loto_pr(fgl_glm)
+fgl_las1_pr <- plot_loto_pr(fgl_las1)
+fgl_las2_pr <- plot_loto_pr(fgl_las2)
+fgl_xgb_pr  <- plot_loto_pr(fgl_xgb)
+
+# AUPRCs
+fg_pr <- c( fgl_glm_pr, fgl_las1_pr, fgl_las2_pr, fgl_xgb_pr )
+names(fg_pr) <- c( "GLM", "LASSO1", "LASSO2", "XGBoost" )
+barplot( height=fg_pr, las=2, col=brewer.pal( n=length(fg_pr), name="Greens" ) )
+
+
+#-------------------------------------------------------------------------------
+#   GLM
+#-------------------------------------------------------------------------------
+
 # Run regression
 fg_form <- make_formula( lhs=fg_cols[1], rhs=fg_cols[-1] )
 fg_glm  <- glm( formula=fg_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_fg_glm <- dev_exp(fg_glm)
 
 
 #-------------------------------------------------------------------------------
@@ -2127,17 +2004,10 @@ fg_las <- cv.glmnet( x=as.matrix( tr[ , ..fg_cols ] )[,-1],
 #   XGBoost
 #-------------------------------------------------------------------------------
 
-# REMOVE gene-level covariates
 t0 <- proc.time()
-fg_xgb1 <- train_xgb( data=tr, feat_cols=fg_cols[-1], maxit=100, 
-                      bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-t1 <- proc.time()
-t1-t0
-
-# KEEP gene-level covariates
-t0 <- proc.time()
-fg_xgb2 <- train_xgb( data=tr, feat_cols=fg_cols[-1], maxit=100, 
+fg_xgb <- train_xgb( data=tr, feat_cols=fg_cols[-1], maxit=100, 
                       bias_cols=bias_cols )
+plot_fi(fg_xgb)
 t1 <- proc.time()
 t1-t0
 
@@ -2176,250 +2046,100 @@ plot_pr( model=fg_xgb2, test_df=te, bias_cols=bias_cols )
 
 
 #-------------------------------------------------------------------------------
-#   LOTO
-#-------------------------------------------------------------------------------
-
-fg_loto <- loto( data=tr, feat_cols=fg_cols, backwards_selection=FALSE, 
-                 bias_cols=bias_cols )
-plot_loto_pr( loto_obj = f_loto )
-plot_loto_pr( loto_obj = fg_loto )
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Reduced model + GLCs
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   Model selection
-#-------------------------------------------------------------------------------
-
-# To speed things up, let's get rid of some features that are never included
-pattern <- "corr_and_|corr_uli_|pchic_|clpp_|smr_|abc_"
-fg_speed_cols <- grep( pattern=pattern, x=fg_cols, invert=TRUE, value=TRUE )
-fg_speed_form <- make_formula( lhs=fg_speed_cols[1], rhs=fg_speed_cols[-1] )
-fg_speed_glm  <- glm( formula=fg_speed_form, data=tr, family="binomial" )
-
-# Perform backwards stepwise model selection
-# Remove features predicted to have P > 0.05/5
-og_glm0 <- stats::step( object=fg_speed_glm, k=qchisq( 1-0.05/5, df=1 ) )
-
-# Hard-coded list of features
-og_cols1 <- c( "causal",
-               "pops_glo", "pops_rel",
-               "dist_gene_rel",
-               "magma_rel",
-               "coding_rel", 
-               "prior_n_genes_locus",
-               "twas_bil", 
-               "netwas_bon_score_bil",
-               "corr_liu_rel", 
-               "pLI_lt_0.1", "prot_att", "ABC_count", "Roadmap_count" )
-
-# Manually make models and drop terms that are not Bonferroni-significant
-og_cols <- c( "causal",
-              "pops_glo", "pops_rel",
-              "dist_gene_rel",
-              "magma_rel",
-              "coding_rel", 
-              "prior_n_genes_locus",
-              "twas_bil", 
-              "corr_liu_rel", 
-              "pLI_lt_0.1", "ABC_count", "Roadmap_count" )
-
-# Run regression
-og_form1 <- make_formula( lhs=og_cols1[1], rhs=og_cols1[-1] )
-og_glm1  <- glm( formula=og_form1, data=tr, family="binomial" )
-
-# Forest plot
-glm_to_forest_p( mod=og_glm1, xmax=NULL )
-
-
-#-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# "Reduced" list of selected features
-og_cols <- c( "causal",
-              "pops_glo", "pops_rel",
-              "dist_gene_rel",
-              "magma_rel",
-              "coding_rel", 
-              "prior_n_genes_locus",
-              "twas_bil", 
-              "corr_liu_rel", 
-              "pLI_lt_0.1", "ABC_count", "Roadmap_count" )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..og_cols ][,-1] ), order="hclust" )
-
-# Run regression
-og_form <- make_formula( lhs=og_cols[1], rhs=og_cols[-1] )
-og_glm  <- glm( formula=og_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_og_glm <- dev_exp(og_glm)
-dev_exp( model=og_glm, in_sample=TRUE  ) / dev_exp( model=fg_glm, in_sample=TRUE  )
-dev_exp( model=og_glm, in_sample=FALSE ) / dev_exp( model=fg_glm, in_sample=FALSE )
-
-# Forest plot
-glm_to_forest_p( mod=o_glm, xmax=NULL )
-
-
-#-------------------------------------------------------------------------------
-#   LASSO
-#-------------------------------------------------------------------------------
-
-# Make LASSO model
-og_las <- cv.glmnet( x=as.matrix( tr[ , ..og_cols ] )[,-1], 
-                     y=tr[["causal"]], family="binomial", standardize=FALSE )
-
-
-#-------------------------------------------------------------------------------
-#   XGBoost
-#-------------------------------------------------------------------------------
-
-# REMOVE gene-level covariates
-og_xgb1 <- train_xgb( data=tr, feat_cols=og_cols[-1], maxit=100, 
-                      bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-xgb_to_forest( xgb_mod=og_xgb1, suffix="", xmax=NULL )
-
-# KEEP gene-level covariates
-og_xgb2 <- train_xgb( data=tr, feat_cols=og_cols[-1], maxit=100, 
-                      bias_cols=bias_cols )
-xgb_to_forest( xgb_mod=og_xgb2, suffix="", xmax=NULL )
-
-
-#-------------------------------------------------------------------------------
-#   Assess performance of the models in the test set
-#-------------------------------------------------------------------------------
-
-# AUPRC: REMOVE gene-level covariates
-og_pr1 <- auprc_test_set( test_df   = te, 
-                          rand_mod  = rand_mod,
-                          glm_mod   = og_glm, 
-                          las_mod   = og_las, 
-                          xgb_mod   = og_xgb1, 
-                          ymax      = 1, 
-                          bias_cols = bias_cols, 
-                          glc_cols  = glc_cols,
-                          rm_glc    = TRUE )
-fg_pr1; og_pr1; og_pr1/fg_pr1
-
-# AUPRC: KEEP gene-level covariates
-og_pr2 <- auprc_test_set( test_df   = te, 
-                          rand_mod  = rand_mod,
-                          glm_mod   = og_glm, 
-                          las_mod   = og_las, 
-                          xgb_mod   = og_xgb2, 
-                          ymax      = 1, 
-                          bias_cols = bias_cols )
-fg_pr2; og_pr2; og_pr2/fg_pr2
-
-# PR curves: REMOVE gene-level covariates
-plot_pr( model=og_glm,  test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-plot_pr( model=og_xgb1, test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-
-# PR curves: KEEP gene-level covariates
-plot_pr( model=og_glm,  test_df=te, bias_cols=bias_cols )
-plot_pr( model=og_xgb2, test_df=te, bias_cols=bias_cols )
-
-
-#-------------------------------------------------------------------------------
 #///////////////////////////////////////////////////////////////////////////////
 #   Basic model + GLCs
 #///////////////////////////////////////////////////////////////////////////////
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
-#   Model selection
+#   LOTO
 #-------------------------------------------------------------------------------
 
-# Hard-coded list of features from the final "reduced model"
-sg_cols0 <- c( "causal",
-               "pops_glo", "pops_rel",
-               "dist_gene_rel",
-               "magma_rel",
-               "coding_rel", 
-               "prior_n_genes_locus",
-               "pLI_lt_0.1", "ABC_count", "Roadmap_count" )
-# sg_cols0 <- c( "causal",
-#                "pops_glo", "pops_rel",
-#                "dist_tss_bil",
-#                "magma_glo", "magma_rel",
-#                "prior_n_genes_locus",
-#                "pLI", "ABC_count" )
+# Raw feature correlations
+sg_cols <- c( s_cols, bias_cols, glc_cols )
+corrplot( cor( tr[ , ..sg_cols ][,-1] ), order="hclust" )
 
-# Manually make models and drop terms that are not Bonferroni-significant
-sg_cols1 <- c( "causal",
-               "pops_glo", "pops_rel",
-               "dist_gene_rel",
-               "magma_rel",
-               "coding_rel", 
-               "prior_n_genes_locus",
-               "pLI_lt_0.1", "ABC_count", "Roadmap_count" )
+# Run
+# sg_loto <- loto( data=tr, feat_cols=sg_cols, backwards_selection=TRUE, maxit=100,
+#                  bias_cols=bias_cols )
+# saveRDS( object=sg_loto, file=file.path( maindir, "loto_basic_glc.rds" ) )
+# sg_loto <- readRDS( file=file.path( maindir, "loto_basic_glc.rds" ) )
+# sg_pr   <- plot_loto_pr(sg_loto)
+# n_inc_las(sg_loto)
 
-# Run regression
-sg_form1 <- make_formula( lhs=sg_cols1[1], rhs=sg_cols1[-1] )
-sg_glm1  <- glm( formula=sg_form1, data=tr, family="binomial" )
+# Run LOTO
+# sgl_glm  <- loto( data=tr, method="glm",    feat_cols=sg_cols, bias_cols=bias_cols,
+#                  backwards_selection=TRUE )
+# saveRDS( object=sgl_glm, file=file.path( maindir, "loto_basic_glc_glm.rds" ) )
+sgl_glm  <- readRDS( file=file.path( maindir, "loto_basic_glc_glm.rds" ) )
+sgl_las1 <- loto( data=tr, method="lasso1", feat_cols=sg_cols, bias_cols=bias_cols )
+sgl_las2 <- loto( data=tr, method="lasso2", feat_cols=sg_cols, bias_cols=bias_cols )
+# sgl_xgb  <- loto( data=tr, method="xgb",    feat_cols=sg_cols, bias_cols=bias_cols, 
+#                   maxit=100 )
+# saveRDS( object=sgl_xgb, file=file.path( maindir, "loto_basic_glc_xgb.rds" ) )
+sgl_xgb  <- readRDS( file=file.path( maindir, "loto_basic_glc_xgb.rds" ) )
 
-# Forest plot
-glm_to_forest_p( mod=sg_glm1, xmax=NULL )
+# Plot
+sgl_glm_pr  <- plot_loto_pr(sgl_glm)
+sgl_las1_pr <- plot_loto_pr(sgl_las1)
+sgl_las2_pr <- plot_loto_pr(sgl_las2)
+sgl_xgb_pr  <- plot_loto_pr(sgl_xgb)
+
+# AUPRCs
+sg_pr <- rbind( sgl_glm_pr, sgl_las1_pr, sgl_las2_pr, sgl_xgb_pr )
+dimnames(sg_pr)[[1]] <- c( "GLM", "LASSO1", "LASSO2", "XGBoost" )
+bp <- barplot( height=sg_pr[,"auprc"], las=2, ylim=c( 0, max(sg_pr) ),
+               col=brewer.pal( n=NROW(sg_pr), name="Greens" ) )
+for( i in seq_along(bp) ){
+  lines( x = c( bp[i],            bp[i] ), lwd=1.5,
+         y = c( sg_pr[ i, "lo" ], sg_pr[ i, "hi" ] ) )
+}
 
 
 #-------------------------------------------------------------------------------
 #   GLM
 #-------------------------------------------------------------------------------
 
-# Features
-sg_cols <- c( "causal",
-              "pops_glo", "pops_rel",
-              "dist_gene_rel",
-              "magma_rel",
-              "coding_rel", 
-              "prior_n_genes_locus",
-              "pLI_lt_0.1", "ABC_count", "Roadmap_count" )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..sg_cols ][,-1] ), order="hclust" )
-
 # Run regression
 sg_form <- make_formula( lhs=sg_cols[1], rhs=sg_cols[-1] )
-sg_glm  <- glm( formula=sg_form, data=tr, family="binomial" )
+sg_glm0 <- glm( formula=sg_form, data=tr, family="binomial" )
+sg_glm  <- stats::step( object=sg_glm0, k=qchisq( 1-0.05/5, df=1 ) )
 
 # Extract deviance explained
-devexp_sg_glm <- dev_exp(sg_glm)
 dev_exp( model=sg_glm, in_sample=TRUE  ) / dev_exp( model=fg_glm, in_sample=TRUE  )
 dev_exp( model=sg_glm, in_sample=FALSE ) / dev_exp( model=fg_glm, in_sample=FALSE )
-dev_exp( model=sg_glm, in_sample=TRUE  ) / dev_exp( model=og_glm, in_sample=TRUE  )
-dev_exp( model=sg_glm, in_sample=FALSE ) / dev_exp( model=og_glm, in_sample=FALSE )
 
 # Forest plot
 glm_to_forest_p( mod=sg_glm, xmax=NULL )
+glm_to_forest(   mod=sg_glm, suffix="", standardize=FALSE )
+glm_to_forest(   mod=sg_glm, suffix="", standardize=TRUE )
 
 
 #-------------------------------------------------------------------------------
 #   LASSO
 #-------------------------------------------------------------------------------
 
+# LASSO
 sg_las <- cv.glmnet( x=as.matrix( tr[ , ..sg_cols ] )[,-1], 
-                     y=tr[["causal"]], family="binomial", standardize=FALSE )
+                     foldid=as.integer( as.factor(tr$trait) ),
+                     y=tr[["causal"]], family="binomial" )
+plot(sg_las)
+plot( sg_las$glmnet.fit, xvar="lambda", label=TRUE )
+abline( v=log(sg_las$lambda.min), lty=2, col="grey" )
+abline( v=log(sg_las$lambda.1se), lty=2, col="grey" )
+cbind( coef( sg_las, s="lambda.min" ),
+       coef( sg_las, s="lambda.1se" ),
+       0:sg_las$glmnet.fit$beta@Dim[1] )
 
 
 #-------------------------------------------------------------------------------
 #   XGBoost
 #-------------------------------------------------------------------------------
 
-# REMOVE gene-level covariates
-sg_xgb1 <- train_xgb( data=tr, feat_cols=sg_cols[-1], maxit=100, 
-                      bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-xgb_to_forest( xgb_mod=sg_xgb1, suffix="", xmax=NULL )
-
-# KEEP gene-level covariates
-sg_xgb2 <- train_xgb( data=tr, feat_cols=sg_cols[-1], maxit=100, 
+sg_xgb <- train_xgb( data=tr, feat_cols=sg_cols[-1], maxit=100, 
                       bias_cols=bias_cols )
-xgb_to_forest( xgb_mod=sg_xgb2, suffix="", xmax=NULL )
+xgb_to_forest( xgb_mod=sg_xgb, suffix="", xmax=NULL )
+plot_fi(sg_xgb)
 
 
 #-------------------------------------------------------------------------------
@@ -2460,16 +2180,249 @@ plot_pr( model=sg_xgb2, test_df=te, bias_cols=bias_cols )
 
 
 #-------------------------------------------------------------------------------
-#   LOTO
+#///////////////////////////////////////////////////////////////////////////////
+#   Compare AUPRCs
+#///////////////////////////////////////////////////////////////////////////////
 #-------------------------------------------------------------------------------
 
-pattern <- "^causal$|^pops_|^dist_gene_|^magma_|^coding_|^prior"
-feat_cols <- grep( pattern=pattern, x=f_cols, value=TRUE )
-feat_cols <- c( feat_cols, bias_cols, glc_cols )
-sg_loto <- loto( data=tr, feat_cols=feat_cols, backwards_selection=TRUE, 
-                 bias_cols=bias_cols )
-plot_loto_pr( loto_obj = fg_loto )
-plot_loto_pr( loto_obj = sg_loto )
+# Set up the data
+auprcs <- rbind( f_pr[ -1, 1 ], s_pr[ -1, 1 ], sg_pr[ -1, 1 ] )
+lo     <- rbind( f_pr[ -1, 2 ], s_pr[ -1, 2 ], sg_pr[ -1, 2 ] )
+hi     <- rbind( f_pr[ -1, 3 ], s_pr[ -1, 3 ], sg_pr[ -1, 3 ] )
+dimnames(auprcs)[[1]] <- c( "Full", "Basic", "Basic + GLCs" )
+
+# Plot feature sets together
+par( mar=c(5,5,1,1) )
+bp1 <- barplot( height=t(auprcs), beside=TRUE, las=1, legend=TRUE, 
+                ylab="AUPRC (±95% CI)", ylim=c( 0, max(hi) ),
+                args.legend=list( x=1, y=0, xjust=0, yjust=0 ), 
+                col=brewer.pal( n=NCOL(auprcs), name="Greens" ) )
+for( i in seq_along(bp1) ){
+  lines( x = c( bp1[i],   bp1[i] ), lwd=1.5,
+         y = c( t(lo)[i], t(hi)[i] ) )
+}
+
+# Plot ML methods together
+bp2 <- barplot( height=auprcs, beside=TRUE, las=1, legend=TRUE, 
+                ylab="AUPRC (±95% CI)", ylim=c( 0, max(hi) ),
+                args.legend=list( x=1, y=0, xjust=0, yjust=0 ),
+                col=brewer.pal( n=NROW(auprcs), name="Greens" ) )
+for( i in seq_along(bp2) ){
+  lines( x = c( bp1[i], bp1[i] ), lwd=1.5,
+         y = c( lo[i],  hi[i] ) )
+}
+
+
+#-------------------------------------------------------------------------------
+#///////////////////////////////////////////////////////////////////////////////
+#   Refine basic+GLC model
+#///////////////////////////////////////////////////////////////////////////////
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+#   Do we need a covariate in the model to account for the fact that different
+#   traits have different power for POPS?
+#-------------------------------------------------------------------------------
+
+# Look at correlation between mean, SD, skewness, and kurtosis across traits
+tr$tcp <- paste0( tr$trait, "_", tr$region, "_", tr$cs_id )
+pl <- tapply( X=tr$tcp,      INDEX=tr$trait, FUN=function(x) length( unique(x) ) )
+pm <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=mean )
+pv <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=var )
+ps <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=skewness )
+pk <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=kurtosis )
+barplot( sort(pl), las=2, col=viridis( length(pm) ) )
+barplot( sort(pm), las=2, col=viridis( length(pm) ) )
+barplot( sort(pv), las=2, col=viridis( length(pm) ) )
+barplot( sort(ps), las=2, col=viridis( length(pm) ) )
+barplot( sort(pk), las=2, col=viridis( length(pm) ) )
+corrplot( cor( cbind( pl, pm, pv, ps, pk ) ) )
+
+# eCDF
+plot( ecdf(tr$pops_glo), col="white", las=1 )
+for( i in names( sort(pl) ) ){
+  sub <- tr[ tr$trait == i , ]
+  plot( ecdf(sub$pops_glo), add=TRUE, 
+        col=viridis( n=length(pl) )[ which( names( sort(pl) ) == i)] )
+}
+
+# Make columns for the value
+tr$n_tcp     <- pl[ match( tr$trait, names(pl) ) ]
+tr$pops_mean <- pm[ match( tr$trait, names(pm) ) ]
+tr$pops_var  <- pv[ match( tr$trait, names(pv) ) ]
+tr$pops_skew <- ps[ match( tr$trait, names(ps) ) ]
+
+# Make models with just the trait-level covariate
+summary( glm( causal ~ n_tcp,     data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_mean, data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_var,  data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_skew, data=tr, family="binomial" ) )$coef
+
+# Make models with pops_glo + the trait-level covariate
+summary( glm( causal ~ pops_glo,             data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + n_tcp,     data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + pops_mean, data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + pops_var,  data=tr, family="binomial" ) )$coef
+summary( glm( causal ~ pops_glo + pops_skew, data=tr, family="binomial" ) )$coef
+
+# Add trait-level covariates to the basic model
+t_form1 <- update( sg_glm$formula, . ~ . + n_tcp )
+t_form2 <- update( sg_glm$formula, . ~ . + pops_mean )
+t_form3 <- update( sg_glm$formula, . ~ . + pops_var )
+t_form4 <- update( sg_glm$formula, . ~ . + pops_skew )
+t_glm1  <- glm( t_form1, data=tr, family="binomial" )
+t_glm2  <- glm( t_form2, data=tr, family="binomial" )
+t_glm3  <- glm( t_form3, data=tr, family="binomial" )
+t_glm4  <- glm( t_form4, data=tr, family="binomial" )
+glm_to_forest_p( mod=t_glm1, suffix="" )
+glm_to_forest_p( mod=t_glm2, suffix="" )
+glm_to_forest_p( mod=t_glm3, suffix="" )
+glm_to_forest_p( mod=t_glm4, suffix="" )
+
+# Add an interaction
+t_form1 <- update( sg_glm$formula, . ~ . + pops_glo*n_tcp )
+t_form2 <- update( sg_glm$formula, . ~ . + pops_glo*pops_mean )
+t_form3 <- update( sg_glm$formula, . ~ . + pops_glo*pops_var )
+t_form4 <- update( sg_glm$formula, . ~ . + pops_glo*pops_skew )
+t_glm1  <- glm( t_form1, data=tr, family="binomial" )
+t_glm2  <- glm( t_form2, data=tr, family="binomial" )
+t_glm3  <- glm( t_form3, data=tr, family="binomial" )
+t_glm4  <- glm( t_form4, data=tr, family="binomial" )
+glm_to_forest_p( mod=t_glm1, suffix="" )
+glm_to_forest_p( mod=t_glm2, suffix="" )
+glm_to_forest_p( mod=t_glm3, suffix="" )
+glm_to_forest_p( mod=t_glm4, suffix="" )
+summary(t_glm2)$coef
+
+# Look at how P(causal) looks at 25th, 50th, and 75th percentile...
+# ...for both pops_glo and pops_mean. Assuming other variables are at their mean.
+feat_cols <- attr( sg_glm$terms, "term.labels")
+cm <- colMeans( x=tr[ , ..feat_cols ] )
+df <- as.data.frame( matrix( rep( cm, 9), nrow=9, byrow=TRUE ) )
+names(df) <- names(cm)
+df$pops_glo  <- rep( quantile( tr$pops_glo,  probs=c( 0.1, 0.5, 0.9 ) ), 3 )
+df$pops_mean <- rep( quantile( tr$pops_mean, probs=c( 0.1, 0.5, 0.9 ) ), 
+                     rep( 3, 3 ) )
+df$pops_rel  <- 0
+df$pops_bil  <- 1
+df$dist_gene_rel <- -3
+pred <- predict( object=t_glm2, newdata=df, se=TRUE )
+df$p_causal <- logistic(pred$fit)
+
+# Plot
+plot( df$pops_glo, df$p_causal, type="n", las=1, ylim=c( 0, max(df$p_causal) ),
+      xlab="pops_glo", ylab="P(causal)" )
+cols <- viridis(3)
+for( i in unique(df$pops_mean) ){
+  sub <- df[ df$pops_mean == i , ]
+  idx <- which( unique(df$pops_mean) == i )
+  lines( sub$pops_glo, sub$p_causal, col=cols[idx], lwd=3 )
+}
+legend( "topleft", legend=paste( "Mean PoPS:", c( "10th", "50th", "90th" ) ), fill=cols )
+
+
+#-------------------------------------------------------------------------------
+#   Do we need a covariate in the model to account for the fact that different
+#   traits have different power for MAGMA?
+#-------------------------------------------------------------------------------
+
+# Look at correlation between mean, SD, skewness, and kurtosis across traits
+mm <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=mean )
+mv <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=var )
+ms <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=skewness )
+mk <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=kurtosis )
+barplot( sort(mm), las=2, col=viridis( length(pm) ) )
+barplot( sort(mv), las=2, col=viridis( length(pm) ) )
+barplot( sort(ms), las=2, col=viridis( length(pm) ) )
+barplot( sort(mk), las=2, col=viridis( length(pm) ) )
+corrplot( cor( cbind( mm, mv, ms, mk ) ) )
+
+# eCDF
+plot( ecdf(tr$magma_rel), col="white", las=1 )
+for( i in names( sort(pl) ) ){
+  sub <- tr[ tr$trait == i , ]
+  plot( ecdf(sub$magma_rel), add=TRUE, 
+        col=viridis( n=length(pl) )[ which( names( sort(pl) ) == i)] )
+}
+
+# Make columns for the value
+tr$mag_rel_mean <- mm[ match( tr$trait, names(mm) ) ]
+tr$mag_rel_var  <- mv[ match( tr$trait, names(mv) ) ]
+tr$mag_rel_skew <- ms[ match( tr$trait, names(ms) ) ]
+
+# Add trait-level covariates to the basic model
+t_form1 <- update( sg_glm$formula, . ~ . + magma_rel*mag_rel_mean )
+t_form2 <- update( sg_glm$formula, . ~ . + magma_rel*mag_rel_var )
+t_form3 <- update( sg_glm$formula, . ~ . + magma_rel*mag_rel_skew )
+t_glm1  <- glm( t_form1, data=tr, family="binomial" )
+t_glm2  <- glm( t_form2, data=tr, family="binomial" )
+t_glm3  <- glm( t_form3, data=tr, family="binomial" )
+glm_to_forest_p( mod=t_glm1, suffix="" )
+glm_to_forest_p( mod=t_glm2, suffix="" )
+glm_to_forest_p( mod=t_glm3, suffix="" )
+
+
+#-------------------------------------------------------------------------------
+#   Does adding quadratic terms improve the model? No.
+#-------------------------------------------------------------------------------
+
+# Which polynomial leads to the biggest improvement in model fit?
+poly_lrt <- function(variable){
+  u_form <- update( sg_glm$formula, paste0( "~ . - ", variable, " + poly(", variable, ", 2)" ) )
+  u_glm  <- glm( formula=u_form, data=tr, family="binomial" )
+  anova( sg_glm, u_glm, test="Chi" )$`Pr(>Chi)`[2]
+}
+poly_lrt( variable="pops_glo" )
+poly_lrt( variable="pops_rel" )
+poly_lrt( variable="dist_gene_rel" )
+poly_lrt( variable="magma_rel" )
+poly_lrt( variable="coding_rel" )
+poly_lrt( variable="prior_n_genes_locus" )
+poly_lrt( variable="prot_att" )
+poly_lrt( variable="ABC_count" )
+poly_lrt( variable="Roadmap_count" )
+
+
+#-------------------------------------------------------------------------------
+#   Does adding interaction terms improve the model? Hardly.
+#-------------------------------------------------------------------------------
+
+# Add all possible interactions
+i_form  <- update( sg_glm$formula, . ~ (.)^2 )
+
+# Perform backwards stepwise model selection
+# Remove features predicted to have P > 0.05/5
+i_glm0 <- glm( formula=i_form, data=tr, family="binomial" )
+i_glm <- stats::step( object=i_glm0, k=qchisq( 1-0.05/10, df=1 ) )
+
+# Forest plot
+glm_to_forest_p( mod=i_glm, xmax=NULL )
+summary(i_glm)$coef
+
+# Look at how P(causal) looks at 25th, 50th, and 75th percentile...
+# ...for both pops_glo and Roadmap_count, assuming other variables are at their mean.
+feat_cols <- all.vars(i_form)[-1]
+cm <- colMeans( x=tr[ , ..feat_cols ] )
+df <- as.data.frame( matrix( rep( cm, 9), nrow=9, byrow=TRUE ) )
+names(df) <- names(cm)
+df$pops_glo      <- rep( quantile( tr$pops_glo,      probs=c( 0.1, 0.5, 0.9 ) ), 3 )
+df$Roadmap_count <- rep( quantile( tr$Roadmap_count, probs=c( 0.1, 0.5, 0.9 ) ), 
+                         rep( 3, 3 ) )
+df$pops_rel  <- 0
+df$dist_gene_rel <- -3
+pred <- predict( object=i_glm, newdata=df, se=TRUE )
+df$p_causal <- logistic(pred$fit)
+
+# Plot
+plot( df$pops_glo, df$p_causal, type="n", las=1, ylim=c( 0, max(df$p_causal) ),
+      xlab="pops_glo", ylab="P(causal)" )
+cols <- viridis(3)
+for( i in unique(df$Roadmap_count) ){
+  sub <- df[ df$Roadmap_count == i , ]
+  idx <- which( unique(df$Roadmap_count) == i )
+  lines( sub$pops_glo, sub$p_causal, col=cols[idx], lwd=3 )
+}
+legend( "topleft", legend=paste( "Roadmap count:", c( "10th", "50th", "90th" ) ), fill=cols )
 
 
 #-------------------------------------------------------------------------------
@@ -2479,12 +2432,24 @@ plot_loto_pr( loto_obj = sg_loto )
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
+#   LOTO calibration
+#-------------------------------------------------------------------------------
+
+cal_plot_logistic( .data=sgl_las1$preds, truth=causal, estimate=pred ) +
+  ggtitle("Calibration plot")
+cal_plot_logistic( .data=sgl_las1$preds, truth=causal, estimate=calibrated ) +
+  ggtitle("Calibration plot")
+cal_plot_logistic( .data=sgl_las1$preds, truth=causal, estimate=scaled ) +
+  ggtitle("Calibration plot")
+
+
+#-------------------------------------------------------------------------------
 #   Generate a variety of re-calibrated model predictions
 #-------------------------------------------------------------------------------
 
 # Get model predictions, plus several re-calibrations
-adj_data_tr <- recalibrate_preds( test_df=tr, model=s_glm, bias_cols=bias_cols )
-adj_data_te <- recalibrate_preds( test_df=te, model=s_glm, bias_cols=bias_cols )
+adj_data_tr <- recalibrate_preds( test_df=tr, model=sg_las, bias_cols=bias_cols )
+adj_data_te <- recalibrate_preds( test_df=te, model=sg_las, bias_cols=bias_cols )
 
 # Train a LASSO model to meta-re-calibrate model outputs
 adj_mod <- recalibration_model( data=adj_data_tr )
@@ -2578,87 +2543,6 @@ abline( a=0, b=1, lwd=2, lty=2, col="grey" )
 #   Miscellaneous
 #///////////////////////////////////////////////////////////////////////////////
 #-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   Does adding quadratic terms improve the model? No.
-#-------------------------------------------------------------------------------
-
-# Make quadratic terms for all features
-tr$pops_glo_poly2      <- tr$pops_glo      * tr$pops_glo
-tr$pops_rel_poly2      <- tr$pops_rel      * tr$pops_rel
-tr$dist_gene_rel_poly2 <- tr$dist_gene_rel * tr$dist_gene_rel
-tr$magma_rel_poly2     <- tr$magma_rel     * tr$magma_rel
-tr$coding_glo_poly2    <- tr$coding_glo    * tr$coding_glo
-tr$coding_rel_poly2    <- tr$coding_rel    * tr$coding_rel
-
-# Which polynomial leads to the biggest improvement in model fit?
-poly_lrt <- function(variable){
-  u_form <- update( s_form, paste0( "~ . + ", variable ) )
-  u_glm  <- glm( formula=u_form, data=tr, family="binomial" )
-  anova( s_glm, u_glm, test="Chi" )$`Pr(>Chi)`[2]
-}
-poly_lrt( variable="pops_glo_poly2" )
-poly_lrt( variable="pops_rel_poly2" )
-poly_lrt( variable="dist_gene_rel_poly2" )
-poly_lrt( variable="magma_rel_poly2" )
-poly_lrt( variable="coding_glo_poly2" )
-poly_lrt( variable="coding_rel_poly2" )
-
-# "Basic" list of selected faeatures
-qcols <- c( s_cols, "pops_glo_poly2" )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..qcols ][,-1] ), order="hclust" )
-
-# Run regression
-q_form <- make_formula( lhs=qcols[1], rhs=qcols[-1] )
-q_glm  <- glm( formula=q_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_q_glm <- ( q_glm$null.deviance - q_glm$deviance ) / q_glm$null.deviance
-devexp_q_glm / devexp_s_glm
-
-# Forest plot
-glm_to_forest_p( mod=q_glm )
-
-
-#-------------------------------------------------------------------------------
-#   Does adding interaction terms improve the model? No.
-#-------------------------------------------------------------------------------
-
-# Add all possible interactions
-i_form0 <- make_formula( lhs=s_cols[1], 
-                         rhs=c( setdiff( s_cols[-1], cov_cols ), 
-                                "prior_n_genes_locus" ) )
-i_form0 <- update( i_form0, ~ (.)^2 )
-i_form0 <- update( i_form0, ~ . + prot_att_poly2 + prot_att_miss + 
-                     rvis4 + rvis4_poly2 )
-
-# Perform backwards stepwise model selection
-# Remove features predicted to have P > 0.05/10
-i_glm0 <- glm( formula=i_form0, data=tr, family="binomial" )
-i_glm1 <- stats::step( object=i_glm0, k=qchisq( 1-0.05/10, df=1 ) )
-
-# Hard-coded list of features that passed model selection
-# icols1 <- c( s_cols,
-#             "pops_rel:prior_n_genes_locus",
-#             "dist_gene_rel:coding_glo" )
-
-# Manually make models and drop terms that are not Bonferroni-significant
-icols <- c( s_cols, 
-            "pops_rel:prior_n_genes_locus" )
-
-# Run regression
-i_form <- make_formula( lhs=icols[1], rhs=icols[-1] )
-i_glm  <- glm( formula=i_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_i_glm <- ( i_glm$null.deviance - i_glm$deviance ) / i_glm$null.deviance
-devexp_i_glm / devexp_s_glm
-
-# Forest plot
-glm_to_forest_p( mod=i_glm, xmax=NULL )
-
 
 #-------------------------------------------------------------------------------
 #   Plot features v. residuals
