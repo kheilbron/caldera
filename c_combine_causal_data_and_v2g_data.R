@@ -117,11 +117,13 @@ m$dist_tss_glo      <- -log10( m$distance_tss + 1e3 )
 # TWAS
 m$twas_p <- ifelse( m$twas_p == 0, .Machine$double.xmin, m$twas_p )
 m$twas_logp_glo <- ifelse( is.na(m$twas_p), -log10(1), -log10(m$twas_p) )
-m$twas_glo <- ifelse( is.na(m$twas_z), 0,            abs(m$twas_z) )
+m$twas_glo <- ifelse( is.na(m$twas_z), 0, abs(m$twas_z) )
 
 # E-P correlation
-m$corr_liu_raw_l2g <- ifelse( is.na(m$corr_liu_score), 0, m$corr_liu_score )
-m$corr_liu_glo  <- log10( ifelse( m$corr_liu_raw_l2g < 1, 1, m$corr_liu_raw_l2g ) )
+m$corr_liu_raw_l2g <- ifelse( is.na(m$corr_liu_score), 
+                              min( m$corr_liu_score, na.rm=TRUE ), 
+                              m$corr_liu_score )
+m$corr_liu_glo  <- log10(m$corr_liu_raw_l2g)
 m$corr_and_glo  <- ifelse( is.na(m$corr_andersson_score), 0, m$corr_andersson_score )
 m$corr_uli_glo  <- ifelse( is.na(m$corr_ulirsch_score), 0, m$corr_ulirsch_score )
 
@@ -131,28 +133,29 @@ m$pchic_jav_glo  <- ifelse( is.na(m$pchic_javierre_score), 0, m$pchic_javierre_s
 
 # CLPP
 m$clpp_raw_l2g <- ifelse( is.na(m$clpp_prob), 0, m$clpp_prob )
-m$clpp_glo  <- ifelse( is.na(m$clpp_prob), log10(0.0001), log10(m$clpp_prob) )
+m$clpp_glo     <- ifelse( is.na(m$clpp_prob), 
+                          log10( min( m$clpp_prob, na.rm=TRUE ) ), 
+                          log10(m$clpp_prob) )
 
 # ABC
 m$abc_raw_l2g <- ifelse( is.na(m$abc_score), 0, m$abc_score )
-m$abc_glo  <- ifelse( is.na(m$abc_score) | m$abc_score<0.01, 
-                      log10(0.01), log10(m$abc_score) )
+m$abc_glo  <- ifelse( is.na(m$abc_score) | m$abc_score == 0, 
+                      log10( min( m$abc_score[ m$abc_score > 0 ], na.rm=TRUE ) ), 
+                      log10(m$abc_score) )
 
 # MAGMA
 m$magma_glo <- ifelse( is.na(m$magma_score), 
                        median( m$magma_score, na.rm=TRUE ), 
                        m$magma_score )
-m$magma_glo[ m$magma_glo > 10 ] <- 10
 
 # SMR
 m$smr_glo <- ifelse( is.na(m$smr_p),
-                     median( -log10(m$smr_p), na.rm=TRUE ), 
+                     -log10( max( m$smr_p, na.rm=TRUE ) ), 
                      -log10(m$smr_p) )
-m$smr_glo[ m$smr_glo > 10 ] <- 10
 
 # Coding
-m$coding_glo <- ifelse( is.na(m$coding_prob) | logit10(m$coding_prob) < log10(10^-3), 
-                        log10(10^-3), 
+m$coding_glo <- ifelse( is.na(m$coding_prob), 
+                        logit10( min( m$coding_prob, na.rm=TRUE ) ), 
                         logit10(m$coding_prob) )
 m$coding     <- ifelse( is.na(m$coding_prob), 0, 1 )
 
@@ -382,49 +385,6 @@ m2$pops_and_nearest <- m2$pops_bil & m2$dist_gene_bil
 
 
 #-------------------------------------------------------------------------------
-#   Add protein attenuation level as a covariate
-#-------------------------------------------------------------------------------
-
-# Read in the data
-pa <- fread( file.path( maindir, "protein_attenuation.csv" ) )
-
-# Merge
-pa_cols <- c( "gene", "prot_att", "prot_att_class" )
-m3 <- left_join( x=m2, y=pa[,..pa_cols] )
-m3$prot_att_miss <- ifelse( is.na(m3$prot_att_class), 1, 0 )
-set( x     = m3, 
-     i     = which( is.na(m3$prot_att) ), 
-     j     = "prot_att", 
-     # value = 0.093843 )
-     value = median( m3$prot_att, na.rm=TRUE ) )
-m3$prot_att_poly2 <- m3$prot_att * m3$prot_att
-set( x     = m3, 
-     i     = which( is.na(m3$prot_att_class) ), 
-     j     = "prot_att_class", 
-     value = "d_miss" )
-
-
-#-------------------------------------------------------------------------------
-#   Add King et al. 2019 gene-level covariates
-#-------------------------------------------------------------------------------
-
-# Read in the data
-king <- fread( file.path( maindir, "king_2019_gene_covariates.tsv" ) )
-
-# Merge
-king_cols <- c( "ensgid", "rvis" )
-m4 <- left_join( x=m3, y=king[,..king_cols] )
-m4$rvis_miss <- ifelse( is.na(m4$rvis), 1, 0 )
-set( x     = m4, 
-     i     = which( is.na(m4$rvis) ), 
-     j     = "rvis", 
-     # value = -0.603598 )
-     value = median( m4$rvis, na.rm=TRUE ) )
-m4$rvis4 <- ifelse( abs(m4$rvis) > 4, 4*sign(m4$rvis), m4$rvis )
-m4$rvis4_poly2 <- m4$rvis4^2
-
-
-#-------------------------------------------------------------------------------
 #   Add Mostafavi et al. 2023 gene-level covariates
 #-------------------------------------------------------------------------------
 
@@ -433,78 +393,77 @@ mo_file <- "~/projects/causal_genes/mostafavi2023_gene_annots/pc_genes.txt"
 mo <- fread(mo_file)
 names(mo)[ names(mo) == "GeneSymbol" ] <- "ensgid"
 mo$gene <- NULL
-m5 <- left_join( x=m4, y=mo, by="ensgid" )
+m3 <- left_join( x=m2, y=mo, by="ensgid" )
 
 # Missingness
-m5$pritchard_miss <- ifelse( is.na(m5$length), 1, 0 )
+m3$pritchard_miss <- ifelse( is.na(m3$length), 1, 0 )
 
 # Gene length
-m5$length[ m5$pritchard_miss == 1 ] <- min( m5$length, na.rm=TRUE )
-m5$gene_bp_log10 <- log10( m5$length*1e3 )
+m3$length[ m3$pritchard_miss == 1 ] <- min( m3$length, na.rm=TRUE )
+m3$gene_bp_log10 <- log10( m3$length*1e3 )
 
 # CDS length
-m5$CDS_length[ m5$pritchard_miss == 1 ] <- min( m5$CDS_length, na.rm=TRUE )
-m5$cds_bp_log10 <- log10( m5$CDS_length*1e3 )
+m3$CDS_length[ m3$pritchard_miss == 1 ] <- min( m3$CDS_length, na.rm=TRUE )
+m3$cds_bp_log10 <- log10( m3$CDS_length*1e3 )
 
 # pLI
-m5$pLI[ is.na(m5$pLI) ] <- 0.5
-m5$pLI[ m5$pLI == 1 ] <- max( m5$pLI[ m5$pLI < 1 ])
-m5$pLI_gt_0.9 <- ifelse( m5$pLI > 0.9, 1, 0 )
-m5$pLI_lt_0.1 <- ifelse( m5$pLI < 0.1, 1, 0 )
-m5$pLI_log10OR <- logit10(m5$pLI)
-m5$pLI_log10OR <- ifelse( m5$pLI_log10OR < -20, -20, m5$pLI_log10OR )
-m5$pLI_log10OR_pos <- ifelse( m5$pLI_log10OR < 0, 0, m5$pLI_log10OR )
-m5$pLI_log10OR_neg <- ifelse( m5$pLI_log10OR > 0, 0, m5$pLI_log10OR )
+m3$pLI[ is.na(m3$pLI) ] <- 0.5
+m3$pLI[ m3$pLI == 1 ] <- max( m3$pLI[ m3$pLI < 1 ])
+m3$pLI_gt_0.9 <- ifelse( m3$pLI > 0.9, 1, 0 )
+m3$pLI_lt_0.1 <- ifelse( m3$pLI < 0.1, 1, 0 )
+m3$pLI_log10OR <- logit10(m3$pLI)
+m3$pLI_log10OR <- ifelse( m3$pLI_log10OR < -20, -20, m3$pLI_log10OR )
 
 # LOEUF
-m5$LOEUF[ is.na(m5$LOEUF) ] <- 0
+m3$LOEUF[ is.na(m3$LOEUF) ] <- 0
 
 # ABC_count
-m5$ABC_count[ m5$pritchard_miss == 1 ] <- min( m5$ABC_count, na.rm=TRUE )
+m3$ABC_count[ m3$pritchard_miss == 1 ] <- min( m3$ABC_count, na.rm=TRUE )
 
 # ABC_length_per_type
-m5$ABC_length_per_type[ m5$pritchard_miss == 1 ] <- min( m5$ABC_length_per_type, na.rm=TRUE )
-m5$abc_bp_log10 <- ifelse( m5$ABC_length_per_type == 0, 
+m3$ABC_length_per_type[ m3$pritchard_miss == 1 ] <- min( m3$ABC_length_per_type, na.rm=TRUE )
+m3$abc_bp_log10 <- ifelse( m3$ABC_length_per_type == 0, 
                            log10( 0.2 * 1e3 ),
-                           log10( m5$ABC_length_per_type * 1e3 ) )
+                           log10( m3$ABC_length_per_type * 1e3 ) )
 
 # Roadmap_count
-m5$Roadmap_count[ m5$pritchard_miss == 1 ] <- min( m5$Roadmap_count, na.rm=TRUE )
+m3$Roadmap_count[ m3$pritchard_miss == 1 ] <- min( m3$Roadmap_count, na.rm=TRUE )
 
 # Roadmap_length_per_type
-m5$Roadmap_length_per_type[ m5$pritchard_miss == 1 ] <- min( m5$Roadmap_length_per_type, na.rm=TRUE )
-m5$roadmap_bp_log10 <- ifelse( m5$Roadmap_length_per_type == 0, 
-                               log10( 0.2 * 1e3 ),
-                               log10( m5$Roadmap_length_per_type * 1e3 ) )
+m3$Roadmap_length_per_type[ m3$pritchard_miss == 1 ] <- min( m3$Roadmap_length_per_type, na.rm=TRUE )
+m3$roadmap_bp_log10 <- ifelse( m3$Roadmap_length_per_type == 0, 
+                               log10( min( m3$Roadmap_length_per_type[ 
+                                 m3$Roadmap_length_per_type > 0 ] ) * 1e3 ),
+                               log10( m3$Roadmap_length_per_type * 1e3 ) )
 
 # promoter_count
-m5$promoter_count[ m5$pritchard_miss == 1 ] <- min( m5$promoter_count, na.rm=TRUE )
-m5$promoter_count_log10 <- log10( m5$promoter_count + 1 )
+m3$promoter_count[ m3$pritchard_miss == 1 ] <- min( m3$promoter_count, na.rm=TRUE )
+m3$promoter_count_log10 <- log10( m3$promoter_count + 1 )
 
 # connect_decile
-m5$connect_decile[ m5$pritchard_miss == 1 ] <- min( m5$connect_decile, na.rm=TRUE )
+m3$connect_decile[ m3$pritchard_miss == 1 ] <- min( m3$connect_decile, na.rm=TRUE )
 
 # connect_quantile
-m5$connect_quantile[ m5$pritchard_miss == 1 ] <- min( m5$connect_quantile, na.rm=TRUE )
+m3$connect_quantile[ m3$pritchard_miss == 1 ] <- min( m3$connect_quantile, na.rm=TRUE )
 
 # connectedness
-m5$connectedness[ m5$pritchard_miss == 1 ] <- min( m5$connectedness, na.rm=TRUE )
+m3$connectedness[ m3$pritchard_miss == 1 ] <- min( m3$connectedness, na.rm=TRUE )
 
 # PPI_degree_decile
-m5$PPI_degree_decile[ m5$pritchard_miss == 1 ] <- min( m5$PPI_degree_decile, na.rm=TRUE )
+m3$PPI_degree_decile[ m3$pritchard_miss == 1 ] <- min( m3$PPI_degree_decile, na.rm=TRUE )
 
 # PPI_degree_quantile
-m5$PPI_degree_quantile[ m5$pritchard_miss == 1 ] <- min( m5$PPI_degree_quantile, na.rm=TRUE )
+m3$PPI_degree_quantile[ m3$pritchard_miss == 1 ] <- min( m3$PPI_degree_quantile, na.rm=TRUE )
 
 # PPI_degree_cat
-m5$PPI_degree_cat[ m5$pritchard_miss == 1 ] <- min( m5$PPI_degree_cat, na.rm=TRUE )
+m3$PPI_degree_cat[ m3$pritchard_miss == 1 ] <- min( m3$PPI_degree_cat, na.rm=TRUE )
 
 # TF
-m5$TF[ m5$pritchard_miss == 1 ] <- min( m5$TF, na.rm=TRUE )
+m3$TF[ m3$pritchard_miss == 1 ] <- min( m3$TF, na.rm=TRUE )
 
 # hs
-m5$hs[ is.na(m5$hs) ] <- max( m5$hs, na.rm=TRUE )
-m5$hs_log10 <- ifelse( m5$hs < 1e-5, log10(1e-5), log10(m5$hs) )
+m3$hs[ is.na(m3$hs) ] <- max( m3$hs, na.rm=TRUE )
+m3$hs_log10 <- ifelse( m3$hs < 1e-5, log10(1e-5), log10(m3$hs) )
 
 
 #-------------------------------------------------------------------------------
@@ -514,7 +473,7 @@ m5$hs_log10 <- ifelse( m5$hs < 1e-5, log10(1e-5), log10(m5$hs) )
 # Write
 merged_outfile <- file.path( maindir, "causal_noncausal_trait_gene_pairs", 
                              "causal_tgp_and_gene_mapping_data_300kb.tsv" )
-fwrite( x=m5, file=merged_outfile, sep="\t" )
+fwrite( x=m3, file=merged_outfile, sep="\t" )
 
 
 #-------------------------------------------------------------------------------
