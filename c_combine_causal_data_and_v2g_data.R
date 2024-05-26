@@ -94,14 +94,14 @@ gcols_vg <- c( "trait", "gene", "ensgid", "region", "cs_id", "chromosome",
 gcols_cnc <- c( "n_cs_snps", "cs_width", "ngenes_nearby" )
 m <- cbind( causal=cnc2$causal, vg2[ , ..gcols_vg ], cnc2[ , ..gcols_cnc ] )
 
-# Add a column for the number of genes in the locus
-m$prior_n_genes_locus <- logit10( 1/m$ngenes_nearby )
-tcp_m <- paste( m$trait, m$region, m$cs_id, sep="_" )
-
 
 #-------------------------------------------------------------------------------
 #   Add columns for global features
 #-------------------------------------------------------------------------------
+
+# n_genes
+m$prior_n_genes_locus <- logit10( 1/m$ngenes_nearby )
+tcp_m <- paste( m$trait, m$region, m$cs_id, sep="_" )
 
 # POPS
 m$pops_glo <- m$pops_score
@@ -199,8 +199,8 @@ for( i in unique(tcp_m) ){
   
   # Compute L2G-like values
   pops_vals     <- sub$pops_glo             - max(sub$pops_glo)
-  gene_vals     <- -log10( sub$distance_genebody - min(sub$distance_genebody) + 1e3 )
-  tss_vals      <- -log10( sub$distance_tss      - min(sub$distance_tss) + 1e3 )
+  gene_vals     <- sub$dist_gene_glo        - max(sub$dist_gene_glo)
+  tss_vals      <- sub$dist_tss_glo         - max(sub$dist_tss_glo)
   twas_vals     <- sub$twas_glo             - max(sub$twas_glo)
   liu_vals      <- sub$corr_liu_glo         - max(sub$corr_liu_glo)
   and_vals      <- sub$corr_and_glo         - max(sub$corr_and_glo)
@@ -319,69 +319,33 @@ for( i in unique(tcp_m) ){
        value = netwas_b_vals )
 }
 
+
+#-------------------------------------------------------------------------------
+#   Add columns for best-in-locus features
+#-------------------------------------------------------------------------------
+
 # Add BIL
-m$depict_z_bil         <- m$depict_z_rel         == 0
-m$netwas_score_bil     <- m$netwas_score_rel     == 0
-m$netwas_bon_score_bil <- m$netwas_bon_score_rel == 0
-
-# Look at the first TCP
-m[ tcp_m == unique(tcp_m)[1] , ]
-
-
-#-------------------------------------------------------------------------------
-#   Modify rank variables to reflect what was used in the paper
-#-------------------------------------------------------------------------------
-
-# If TWAS P is not Bonferroni-significant, set rank to NA
-bonf <- 0.05/2e4
-set( x = m, 
-     i = which( m$twas_p > bonf ), 
-     j = "twas_rank", 
-     value = NA )
-
-# If CLPP <= 0.1, set rank to NA
-set( x = m, 
-     i = which( m$clpp_prob <= 0.1 ), 
-     j = "clpp_rank", 
-     value = NA )
-
-# Create new columns for whether a given TGP has best-in-locus support from a given method
-rank_cols <- grep( pattern="rank$", x=names(m), value=TRUE )
-bil_colnames <- sub( pattern="_rank$", replacement="_bil", x=rank_cols )
-bil_colnames <- sub( pattern="javierre", replacement="jav", x=bil_colnames )
-bil_colnames <- sub( pattern="andersson", replacement="and", x=bil_colnames )
-bil_colnames <- sub( pattern="ulirsch", replacement="uli", x=bil_colnames )
-bil_colnames <- sub( pattern="distance", replacement="dist", x=bil_colnames )
-bil_colnames <- sub( pattern="genebody", replacement="gene", x=bil_colnames )
-empty_bil <- as.data.table( matrix( nrow=NROW(m), ncol=length(bil_colnames) ) )
-names(empty_bil) <- bil_colnames
-m2 <- cbind( m, empty_bil )
-
-# For each V2G method,
-# Assign rank 1 TGP as having V2G support and all other TGPs as not
-for( j in seq_along(bil_colnames) ){
-  
-  # Subset the data
-  vg_col  <- bil_colnames[j]
-  rank_col <- rank_cols[j]
-  
-  # Assign the lowest-ranked TGP as having V2G support and all other TGPs as not
-  has_bil <- m2[[rank_col]] == 1 & !is.na(m2[[rank_col]])
-  set( x=m2, j=vg_col, value=has_bil )
+rel_cols <- grep( pattern="_rel$", x=names(m), value=TRUE )
+for( i in rel_cols ){
+  bil_col <- sub( pattern="_rel$", replacement="_bil", x=i )
+  m[[bil_col]] <- m[[i]] == 0
 }
 
 # Add columns for any V2G across E-P correlations
 # And again for PC-HiC
-ep_cols    <- grep( pattern="^corr_.*_bil$",  x=names(m2), value=TRUE )
-pchic_cols <- grep( pattern="^pchic_.*_bil$", x=names(m2), value=TRUE )
-m2$corr_any_bil  <- apply( X=m2[ , ..ep_cols ],    MARGIN=1, FUN=any )
-m2$pchic_any_bil <- apply( X=m2[ , ..pchic_cols ], MARGIN=1, FUN=any )
+ep_cols    <- grep( pattern="^corr_.*_bil$",  x=names(m), value=TRUE )
+pchic_cols <- grep( pattern="^pchic_.*_bil$", x=names(m), value=TRUE )
+m$corr_any_bil  <- apply( X=m[ , ..ep_cols ],    MARGIN=1, FUN=any )
+m$pchic_any_bil <- apply( X=m[ , ..pchic_cols ], MARGIN=1, FUN=any )
 
 # Add columns for POPS+local and POPS+nearest_gene, like in the original paper
-m2$pops_and_local <- m2$pops_bil & 
-  ( m2$dist_gene_bil | m2$magma_bil | m2$twas_bil | m2$clpp_bil | m2$abc_bil | 
-      m2$corr_any_bil | m2$pchic_any_bil | m2$smr_bil )
-m2$pops_and_nearest <- m2$pops_bil & m2$dist_gene_bil
+m$pops_and_local <- m$pops_bil & 
+  ( m$dist_gene_bil | m$magma_bil | m$twas_bil | m$clpp_bil | m$abc_bil | 
+      m$corr_any_bil | m$pchic_any_bil | m$smr_bil )
+m$pops_and_nearest <- m$pops_bil & m$dist_gene_bil
+
+# Look at the first TCP
+m[ tcp_m == unique(tcp_m)[1] , ]
 
 
 #-------------------------------------------------------------------------------
@@ -393,77 +357,77 @@ mo_file <- "~/projects/causal_genes/mostafavi2023_gene_annots/pc_genes.txt"
 mo <- fread(mo_file)
 names(mo)[ names(mo) == "GeneSymbol" ] <- "ensgid"
 mo$gene <- NULL
-m3 <- left_join( x=m2, y=mo, by="ensgid" )
+m2 <- left_join( x=m, y=mo, by="ensgid" )
 
 # Missingness
-m3$pritchard_miss <- ifelse( is.na(m3$length), 1, 0 )
-
-# Gene length
-m3$length[ m3$pritchard_miss == 1 ] <- min( m3$length, na.rm=TRUE )
-m3$gene_bp_log10 <- log10( m3$length*1e3 )
-
-# CDS length
-m3$CDS_length[ m3$pritchard_miss == 1 ] <- min( m3$CDS_length, na.rm=TRUE )
-m3$cds_bp_log10 <- log10( m3$CDS_length*1e3 )
+m2$pritchard_miss <- ifelse( is.na(m2$length), 1, 0 )
 
 # pLI
-m3$pLI[ is.na(m3$pLI) ] <- 0.5
-m3$pLI[ m3$pLI == 1 ] <- max( m3$pLI[ m3$pLI < 1 ])
-m3$pLI_gt_0.9 <- ifelse( m3$pLI > 0.9, 1, 0 )
-m3$pLI_lt_0.1 <- ifelse( m3$pLI < 0.1, 1, 0 )
-m3$pLI_log10OR <- logit10(m3$pLI)
-m3$pLI_log10OR <- ifelse( m3$pLI_log10OR < -20, -20, m3$pLI_log10OR )
+m2$pLI[ is.na(m2$pLI) ] <- 0.5
+m2$pLI_lt_0.9 <- ifelse( m2$pLI < 0.9, 1, 0 )
+m2$pLI_lt_0.1 <- ifelse( m2$pLI < 0.1, 1, 0 )
+m2$pLI_log10 <- -log10(m2$pLI)
+pLI99 <- quantile( m2$pLI_log10, probs=0.99 )
+m2$pLI_log10 <- ifelse( m2$pLI_log10 > pLI99, pLI99, m2$pLI_log10 )
 
 # LOEUF
-m3$LOEUF[ is.na(m3$LOEUF) ] <- 0
-
-# ABC_count
-m3$ABC_count[ m3$pritchard_miss == 1 ] <- min( m3$ABC_count, na.rm=TRUE )
-
-# ABC_length_per_type
-m3$ABC_length_per_type[ m3$pritchard_miss == 1 ] <- min( m3$ABC_length_per_type, na.rm=TRUE )
-m3$abc_bp_log10 <- ifelse( m3$ABC_length_per_type == 0, 
-                           log10( 0.2 * 1e3 ),
-                           log10( m3$ABC_length_per_type * 1e3 ) )
-
-# Roadmap_count
-m3$Roadmap_count[ m3$pritchard_miss == 1 ] <- min( m3$Roadmap_count, na.rm=TRUE )
-
-# Roadmap_length_per_type
-m3$Roadmap_length_per_type[ m3$pritchard_miss == 1 ] <- min( m3$Roadmap_length_per_type, na.rm=TRUE )
-m3$roadmap_bp_log10 <- ifelse( m3$Roadmap_length_per_type == 0, 
-                               log10( min( m3$Roadmap_length_per_type[ 
-                                 m3$Roadmap_length_per_type > 0 ] ) * 1e3 ),
-                               log10( m3$Roadmap_length_per_type * 1e3 ) )
-
-# promoter_count
-m3$promoter_count[ m3$pritchard_miss == 1 ] <- min( m3$promoter_count, na.rm=TRUE )
-m3$promoter_count_log10 <- log10( m3$promoter_count + 1 )
-
-# connect_decile
-m3$connect_decile[ m3$pritchard_miss == 1 ] <- min( m3$connect_decile, na.rm=TRUE )
-
-# connect_quantile
-m3$connect_quantile[ m3$pritchard_miss == 1 ] <- min( m3$connect_quantile, na.rm=TRUE )
-
-# connectedness
-m3$connectedness[ m3$pritchard_miss == 1 ] <- min( m3$connectedness, na.rm=TRUE )
-
-# PPI_degree_decile
-m3$PPI_degree_decile[ m3$pritchard_miss == 1 ] <- min( m3$PPI_degree_decile, na.rm=TRUE )
-
-# PPI_degree_quantile
-m3$PPI_degree_quantile[ m3$pritchard_miss == 1 ] <- min( m3$PPI_degree_quantile, na.rm=TRUE )
-
-# PPI_degree_cat
-m3$PPI_degree_cat[ m3$pritchard_miss == 1 ] <- min( m3$PPI_degree_cat, na.rm=TRUE )
-
-# TF
-m3$TF[ m3$pritchard_miss == 1 ] <- min( m3$TF, na.rm=TRUE )
+m2$LOEUF[ is.na(m2$LOEUF) ] <- 0
 
 # hs
-m3$hs[ is.na(m3$hs) ] <- max( m3$hs, na.rm=TRUE )
-m3$hs_log10 <- ifelse( m3$hs < 1e-5, log10(1e-5), log10(m3$hs) )
+m2$hs[ is.na(m2$hs) ] <- max( m2$hs, na.rm=TRUE )
+m2$hs_log10 <- -log10(m2$hs)
+
+# Gene length
+m2$length[ m2$pritchard_miss == 1 ] <- min( m2$length, na.rm=TRUE )
+m2$gene_bp_log10 <- log10( m2$length*1e3 )
+
+# CDS length
+m2$CDS_length[ m2$pritchard_miss == 1 ] <- min( m2$CDS_length, na.rm=TRUE )
+m2$cds_bp_log10 <- log10( m2$CDS_length*1e3 )
+
+# ABC_count
+m2$ABC_count[ m2$pritchard_miss == 1 ] <- min( m2$ABC_count, na.rm=TRUE )
+
+# ABC_length_per_type
+m2$ABC_length_per_type[ m2$pritchard_miss == 1 ] <- min( m2$ABC_length_per_type, na.rm=TRUE )
+m2$abc_bp_log10 <- ifelse( m2$ABC_length_per_type == 0, 
+                           log10( 0.2 * 1e3 ),
+                           log10( m2$ABC_length_per_type * 1e3 ) )
+
+# Roadmap_count
+m2$Roadmap_count[ m2$pritchard_miss == 1 ] <- min( m2$Roadmap_count, na.rm=TRUE )
+
+# Roadmap_length_per_type
+m2$Roadmap_length_per_type[ m2$pritchard_miss == 1 ] <- min( m2$Roadmap_length_per_type, na.rm=TRUE )
+m2$roadmap_bp_log10 <- ifelse( m2$Roadmap_length_per_type == 0, 
+                               log10( min( m2$Roadmap_length_per_type[ 
+                                 m2$Roadmap_length_per_type > 0 ] ) * 1e3 ),
+                               log10( m2$Roadmap_length_per_type * 1e3 ) )
+
+# promoter_count
+m2$promoter_count[ m2$pritchard_miss == 1 ] <- min( m2$promoter_count, na.rm=TRUE )
+m2$promoter_count_log10 <- log10( m2$promoter_count + 1 )
+
+# connect_decile
+m2$connect_decile[ m2$pritchard_miss == 1 ] <- min( m2$connect_decile, na.rm=TRUE )
+
+# connect_quantile
+m2$connect_quantile[ m2$pritchard_miss == 1 ] <- min( m2$connect_quantile, na.rm=TRUE )
+
+# connectedness
+m2$connectedness[ m2$pritchard_miss == 1 ] <- min( m2$connectedness, na.rm=TRUE )
+
+# PPI_degree_decile
+m2$PPI_degree_decile[ m2$pritchard_miss == 1 ] <- min( m2$PPI_degree_decile, na.rm=TRUE )
+
+# PPI_degree_quantile
+m2$PPI_degree_quantile[ m2$pritchard_miss == 1 ] <- min( m2$PPI_degree_quantile, na.rm=TRUE )
+
+# PPI_degree_cat
+m2$PPI_degree_cat[ m2$pritchard_miss == 1 ] <- min( m2$PPI_degree_cat, na.rm=TRUE )
+
+# TF
+m2$TF[ m2$pritchard_miss == 1 ] <- min( m2$TF, na.rm=TRUE )
 
 
 #-------------------------------------------------------------------------------
@@ -473,7 +437,7 @@ m3$hs_log10 <- ifelse( m3$hs < 1e-5, log10(1e-5), log10(m3$hs) )
 # Write
 merged_outfile <- file.path( maindir, "causal_noncausal_trait_gene_pairs", 
                              "causal_tgp_and_gene_mapping_data_300kb.tsv" )
-fwrite( x=m3, file=merged_outfile, sep="\t" )
+fwrite( x=m2, file=merged_outfile, sep="\t" )
 
 
 #-------------------------------------------------------------------------------

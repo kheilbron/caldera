@@ -260,10 +260,11 @@ glm_to_forest_p <- function( mod, suffix="", mtext=TRUE, xmax=NULL ){
 #   lasso_to_forest: Make a forest plot from a LASSO object
 #-------------------------------------------------------------------------------
 
-lasso_to_forest <- function( las, standardize=TRUE, train=NULL, xmax=NULL ){
+lasso_to_forest <- function( las, lambda_type="lambda.1se", standardize=TRUE, 
+                             train=NULL, rm_feats=NULL, xmax=NULL ){
   
   # Extract coefficients
-  mod1 <- as.data.frame( coef( object=las, s="lambda.1se" )[ -1, ] )
+  mod1 <- as.data.frame( coef( object=las, s=lambda_type )[ -1, ] )
   names(mod1) <- "effect"
   
   # If specified, standardize coefficients to reflect a 1 SD change
@@ -274,7 +275,10 @@ lasso_to_forest <- function( las, standardize=TRUE, train=NULL, xmax=NULL ){
   }
   
   # Remove dropped features
-  mod3 <- mod1[ mod1$effect !=0 , , drop=FALSE ]
+  mod2 <- mod1[ mod1$effect !=0 , , drop=FALSE ]
+  
+  # Drop specified (bias) features
+  mod3 <- mod2[ setdiff( row.names(mod2), rm_feats ) , , drop=FALSE ]
   
   # Add columns for plotting
   mod3$or <- exp(mod3$effect)
@@ -282,8 +286,9 @@ lasso_to_forest <- function( las, standardize=TRUE, train=NULL, xmax=NULL ){
   mod3 <- mod3[ order(-mod3$effect) , ]
   
   # Plot
-  forest_plot( df=mod3, colour.col="col", xlab="Odds ratio", xmin=0.8, xmax=xmax, 
-               margins=c(5,9,1,6), vert.line.pos=1, mtext.col=NULL,
+  xmin <- min( c( 1, min(mod3$or) ) )
+  forest_plot( df=mod3, colour.col="col", xlab="Odds ratio", xmin=xmin, 
+               xmax=xmax, margins=c(5,9,1,6), vert.line.pos=1, mtext.col=NULL,
                value.col="or", lo.col="or", hi.col="or" )
   par( mar=c(5,5,4,1) )
 }
@@ -1030,17 +1035,18 @@ rel_cols <- c( "causal", "pops_rel", "dist_gene_rel", "dist_tss_rel",
                "depict_z_rel", "netwas_score_rel", "netwas_bon_score_rel" )
 
 # Features that may capture bias in how causal genes were selected
-bias_cols <- c( "pLI_log10OR",       "pLI_lt_0.1",       "pLI_gt_0.9",
-                "LOEUF",             "hs_log10",
-                "gene_bp_log10",     "cds_bp_log10",
-                "ABC_count",         "abc_bp_log10",
-                "Roadmap_count",     "roadmap_bp_log10",
+bias_cols <- c( "pLI_log10",     "pLI_lt_0.1",   "pLI_lt_0.9",
+                "LOEUF",         "hs_log10",
+                "gene_bp_log10", "cds_bp_log10",
+                "abc_bp_log10",  "roadmap_bp_log10",
                 "pritchard_miss" )
 
 # Gene-level features
-glc_cols  <- c( "TF",                "promoter_count_log10",
-                "connect_decile",    "connectedness",
-                "PPI_degree_decile", "PPI_degree_cat" )
+# glc_cols  <- c( "ABC_count",         "Roadmap_count",
+#                 "TF",                "promoter_count_log10",
+#                 "connect_decile",    "connectedness",
+#                 "PPI_degree_decile", "PPI_degree_cat" )
+glc_cols  <- NULL
 
 # Full feature set
 f_cols <- unique( c( a_cols, glo_cols, rel_cols, "prior_n_genes_locus" ) )
@@ -1161,16 +1167,14 @@ corrplot( cor( tr[ , ..sg_cols ][,-1] ), order="hclust" )
 # Run LOTO
 sgl_las1 <- loto( data=tr, method="lasso1", feat_cols=sg_cols, bias_cols=bias_cols )
 sgl_las2 <- loto( data=tr, method="lasso2", feat_cols=sg_cols, bias_cols=bias_cols )
-# sgl_xgb  <- loto( data=tr, method="xgb",    feat_cols=sg_cols, bias_cols=bias_cols, 
+# sgl_xgb  <- loto( data=tr, method="xgb",    feat_cols=sg_cols, bias_cols=bias_cols,
 #                   maxit=100 )
 # saveRDS( object=sgl_xgb, file=file.path( maindir, "loto/loto_basic_glc_xgb.rds" ) )
 sgl_xgb  <- readRDS( file=file.path( maindir, "loto/loto_basic_glc_xgb.rds" ) )
 
 # Plot
 sgl_las1_pr <- plot_loto_pr(sgl_las1)
-sgl_las1_pr <- plot_loto_pr(sgl_las1, type="calibrated")
 sgl_las2_pr <- plot_loto_pr(sgl_las2)
-sgl_las2_pr <- plot_loto_pr(sgl_las2, type="calibrated")
 sgl_xgb_pr  <- plot_loto_pr(sgl_xgb)
 
 # AUPRCs
@@ -1181,6 +1185,26 @@ bp <- barplot( height=sg_pr[,"auprc"], las=2, ylim=c( 0, max(sg_pr) ),
 for( i in seq_along(bp) ){
   lines( x = c( bp[i],            bp[i] ), lwd=1.5,
          y = c( sg_pr[ i, "lo" ], sg_pr[ i, "hi" ] ) )
+}
+
+
+#-------------------------------------------------------------------------------
+#   Calibrated AUPRC barplots
+#-------------------------------------------------------------------------------
+
+# Plot
+sgl_las1c_pr <- plot_loto_pr( sgl_las1, type="calibrated" )
+sgl_las2c_pr <- plot_loto_pr( sgl_las2, type="calibrated" )
+sgl_xgbc_pr  <- plot_loto_pr( sgl_xgb,  type="calibrated" )
+
+# AUPRCs
+sgc_pr <- rbind( sgl_las1c_pr, sgl_las2c_pr, sgl_xgbc_pr )
+dimnames(sgc_pr)[[1]] <- c( "LASSO1", "LASSO2", "XGBoost" )
+bp <- barplot( height=sgc_pr[,"auprc"], las=2, ylim=c( 0, max(sgc_pr) ),
+               col=brewer.pal( n=NROW(sgc_pr), name="Greens" ) )
+for( i in seq_along(bp) ){
+  lines( x = c( bp[i],             bp[i] ), lwd=1.5,
+         y = c( sgc_pr[ i, "lo" ], sgc_pr[ i, "hi" ] ) )
 }
 
 
@@ -1200,12 +1224,12 @@ pnn_r <- sum( tr$causal & tr$pops_and_nearest ) / sum( tr$causal )           #re
 cal_pr0 <- list()
 threshs <- c( 0, seq( 0.5, 0.9, 0.1 ) )
 for( i in seq_along(threshs) ){
-  tp           <- sum( sgl_las1$preds$causal & 
-                         sgl_las1$preds$bil == 1 & 
-                         sgl_las1$preds$calibrated >= threshs[i] )
-  p_denom      <- sum( sgl_las1$preds$bil == 1 & 
-                         sgl_las1$preds$calibrated >= threshs[i] )
-  r_denom      <- sum( sgl_las1$preds$causal )
+  tp           <- sum( sgl_las2$preds$causal & 
+                         sgl_las2$preds$bil == 1 & 
+                         sgl_las2$preds$calibrated >= threshs[i] )
+  p_denom      <- sum( sgl_las2$preds$bil == 1 & 
+                         sgl_las2$preds$calibrated >= threshs[i] )
+  r_denom      <- sum( sgl_las2$preds$causal )
   cal_pr0[[i]] <- c( threshold = threshs[i],
                      precision = tp/p_denom, 
                      recall    = tp/r_denom )
@@ -1214,7 +1238,7 @@ cal_pr <- as.data.frame( do.call( rbind, cal_pr0 ) )
 cal_pr$col <- brewer.pal( n=NROW(cal_pr), name="Greens" )
 
 # Plot
-plot_loto_pr(sgl_las1, type="calibrated" )
+plot_loto_pr(sgl_las2, type="calibrated" )
 points( x=cal_pr$recall, y=cal_pr$precision, pch=19, cex=1.5, col=cal_pr$col )
 points( x=pnl_r,         y=pnl_p,            pch=19, cex=1.5, 
         col=brewer.pal( n=4, name="Blues" )[2] )
@@ -1243,10 +1267,10 @@ cbind( coef( sg_las, s="lambda.min" ),
        0:sg_las$glmnet.fit$beta@Dim[1] )
 
 # Forest plot
-lasso_to_forest( las=sg_las, train=tr )
+lasso_to_forest( las=sg_las, lambda_type="lambda.min", train=tr, rm_feats=bias_cols )
 
 # Train a calibration model
-recal_preds <- recalibrate_preds( df=tr, model=sg_las, method="lasso1", 
+recal_preds <- recalibrate_preds( df=tr, model=sg_las, method="lasso2", 
                                          bias_cols=bias_cols )
 recal_mod   <- recalibration_model( data=recal_preds )
 
@@ -1262,10 +1286,10 @@ recal_mod   <- recalibration_model( data=recal_preds )
 #-------------------------------------------------------------------------------
 
 # Set up the data
-auprcs <- rbind( f_pr[,1], s_pr[,1], sg_pr[,1] )
-lo     <- rbind( f_pr[,2], s_pr[,2], sg_pr[,2] )
-hi     <- rbind( f_pr[,3], s_pr[,3], sg_pr[,3] )
-dimnames(auprcs)[[1]] <- c( "Full", "Basic", "Basic + GLCs" )
+auprcs <- rbind( f_pr[,1], s_pr[,1], sg_pr[,1], sgc_pr[,1] )
+lo     <- rbind( f_pr[,2], s_pr[,2], sg_pr[,2], sgc_pr[,2] )
+hi     <- rbind( f_pr[,3], s_pr[,3], sg_pr[,3], sgc_pr[,3] )
+dimnames(auprcs)[[1]] <- c( "Full", "Basic", "+GLCs", "+calibrated" )
 
 # Plot feature sets together
 par( mar=c(5,5,1,1) )
@@ -1284,7 +1308,7 @@ bp2 <- barplot( height=auprcs, beside=TRUE, las=1, legend=TRUE,
                 args.legend=list( x=1, y=0, xjust=0, yjust=0 ),
                 col=brewer.pal( n=NROW(auprcs), name="Greens" ) )
 for( i in seq_along(bp2) ){
-  lines( x = c( bp1[i], bp1[i] ), lwd=1.5,
+  lines( x = c( bp2[i], bp2[i] ), lwd=1.5,
          y = c( lo[i],  hi[i] ) )
 }
 
@@ -1295,11 +1319,11 @@ for( i in seq_along(bp2) ){
 #///////////////////////////////////////////////////////////////////////////////
 #-------------------------------------------------------------------------------
 
-cal_plot_logistic( .data=sgl_las1$preds, truth=causal, estimate=pred ) +
+cal_plot_logistic( .data=sgl_las2$preds, truth=causal, estimate=pred ) +
   ggtitle("Original predictions")
-cal_plot_logistic( .data=sgl_las1$preds, truth=causal, estimate=calibrated ) +
+cal_plot_logistic( .data=sgl_las2$preds, truth=causal, estimate=calibrated ) +
   ggtitle("Calibrated predictions")
-cal_plot_logistic( .data=sgl_las1$preds, truth=causal, estimate=scaled ) +
+cal_plot_logistic( .data=sgl_las2$preds, truth=causal, estimate=scaled ) +
   ggtitle("Locally-scaled predictions")
 
 
@@ -1321,11 +1345,6 @@ pm <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=mean )
 pv <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=var )
 ps <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=skewness )
 pk <- tapply( X=tr$pops_glo, INDEX=tr$trait, FUN=kurtosis )
-barplot( sort(pl), las=2, col=viridis( length(pm) ) )
-barplot( sort(pm), las=2, col=viridis( length(pm) ) )
-barplot( sort(pv), las=2, col=viridis( length(pm) ) )
-barplot( sort(ps), las=2, col=viridis( length(pm) ) )
-barplot( sort(pk), las=2, col=viridis( length(pm) ) )
 corrplot( cor( cbind( pl, pm, pv, ps, pk ) ) )
 
 # eCDF
@@ -1341,52 +1360,19 @@ tr$n_tcp     <- pl[ match( tr$trait, names(pl) ) ]
 tr$pops_mean <- pm[ match( tr$trait, names(pm) ) ]
 tr$pops_var  <- pv[ match( tr$trait, names(pv) ) ]
 tr$pops_skew <- ps[ match( tr$trait, names(ps) ) ]
-
-# Make models with just the trait-level covariate
-summary( glm( causal ~ n_tcp,     data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_mean, data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_var,  data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_skew, data=tr, family="binomial" ) )$coef
-
-# Make models with pops_glo + the trait-level covariate
-summary( glm( causal ~ pops_glo,             data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + n_tcp,     data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + pops_mean, data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + pops_var,  data=tr, family="binomial" ) )$coef
-summary( glm( causal ~ pops_glo + pops_skew, data=tr, family="binomial" ) )$coef
+tr$pops_int  <- tr$pops_glo * tr$pops_mean
 
 # Add trait-level covariates to the basic model
-t_form1 <- update( sg_glm$formula, . ~ . + n_tcp )
-t_form2 <- update( sg_glm$formula, . ~ . + pops_mean )
-t_form3 <- update( sg_glm$formula, . ~ . + pops_var )
-t_form4 <- update( sg_glm$formula, . ~ . + pops_skew )
-t_glm1  <- glm( t_form1, data=tr, family="binomial" )
-t_glm2  <- glm( t_form2, data=tr, family="binomial" )
-t_glm3  <- glm( t_form3, data=tr, family="binomial" )
-t_glm4  <- glm( t_form4, data=tr, family="binomial" )
-glm_to_forest_p( mod=t_glm1, suffix="" )
-glm_to_forest_p( mod=t_glm2, suffix="" )
-glm_to_forest_p( mod=t_glm3, suffix="" )
-glm_to_forest_p( mod=t_glm4, suffix="" )
-
-# Add an interaction
-t_form1 <- update( sg_glm$formula, . ~ . + pops_glo*n_tcp )
-t_form2 <- update( sg_glm$formula, . ~ . + pops_glo*pops_mean )
-t_form3 <- update( sg_glm$formula, . ~ . + pops_glo*pops_var )
-t_form4 <- update( sg_glm$formula, . ~ . + pops_glo*pops_skew )
-t_glm1  <- glm( t_form1, data=tr, family="binomial" )
-t_glm2  <- glm( t_form2, data=tr, family="binomial" )
-t_glm3  <- glm( t_form3, data=tr, family="binomial" )
-t_glm4  <- glm( t_form4, data=tr, family="binomial" )
-glm_to_forest_p( mod=t_glm1, suffix="" )
-glm_to_forest_p( mod=t_glm2, suffix="" )
-glm_to_forest_p( mod=t_glm3, suffix="" )
-glm_to_forest_p( mod=t_glm4, suffix="" )
-summary(t_glm2)$coef
+sgt_cols <- c( sg_cols, "pops_mean", "pops_int" )
+sgt_las <- cv.glmnet( x=as.matrix( tr[ , ..sgt_cols ] )[,-1], 
+                      foldid=as.integer( as.factor(tr$trait) ),
+                      y=tr[["causal"]], family="binomial" )
+sgt_coef <- as.data.frame( coef( object=sgt_las, s="lambda.min" ) )
+lasso_to_forest( las=sgt_las, lambda_type="lambda.min", train=tr, rm_feats=bias_cols )
 
 # Look at how P(causal) looks at 25th, 50th, and 75th percentile...
 # ...for both pops_glo and pops_mean. Assuming other variables are at their mean.
-feat_cols <- attr( sg_glm$terms, "term.labels")
+feat_cols <- sgt_coef@Dimnames[[1]][-1]
 cm <- colMeans( x=tr[ , ..feat_cols ] )
 df <- as.data.frame( matrix( rep( cm, 9), nrow=9, byrow=TRUE ) )
 names(df) <- names(cm)
@@ -1396,11 +1382,12 @@ df$pops_mean <- rep( quantile( tr$pops_mean, probs=c( 0.1, 0.5, 0.9 ) ),
 df$pops_rel  <- 0
 df$pops_bil  <- 1
 df$dist_gene_rel <- -3
-pred <- predict( object=t_glm2, newdata=df, se=TRUE )
-df$p_causal <- logistic(pred$fit)
+df$p_causal <- as.vector( predict( object=sgt_las, s="lambda.min", type="response",
+                                   newx=as.matrix( df[ , feat_cols ] ) ) )
 
 # Plot
-plot( df$pops_glo, df$p_causal, type="n", las=1, ylim=c( 0, max(df$p_causal) ),
+plot( df$pops_glo, df$p_causal, type="n", las=1, 
+      # ylim=c( 0, max(df$p_causal) ),
       xlab="pops_glo", ylab="P(causal)" )
 cols <- viridis(3)
 for( i in unique(df$pops_mean) ){
@@ -1417,39 +1404,60 @@ legend( "topleft", legend=paste( "Mean PoPS:", c( "10th", "50th", "90th" ) ), fi
 #-------------------------------------------------------------------------------
 
 # Look at correlation between mean, SD, skewness, and kurtosis across traits
-mm <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=mean )
-mv <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=var )
-ms <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=skewness )
-mk <- tapply( X=tr$magma_rel, INDEX=tr$trait, FUN=kurtosis )
-barplot( sort(mm), las=2, col=viridis( length(pm) ) )
-barplot( sort(mv), las=2, col=viridis( length(pm) ) )
-barplot( sort(ms), las=2, col=viridis( length(pm) ) )
-barplot( sort(mk), las=2, col=viridis( length(pm) ) )
+mm <- tapply( X=tr$magma_glo, INDEX=tr$trait, FUN=mean )
+mv <- tapply( X=tr$magma_glo, INDEX=tr$trait, FUN=var )
+ms <- tapply( X=tr$magma_glo, INDEX=tr$trait, FUN=skewness )
+mk <- tapply( X=tr$magma_glo, INDEX=tr$trait, FUN=kurtosis )
 corrplot( cor( cbind( mm, mv, ms, mk ) ) )
 
 # eCDF
-plot( ecdf(tr$magma_rel), col="white", las=1 )
+plot( ecdf(tr$magma_glo), col="white", las=1 )
 for( i in names( sort(pl) ) ){
   sub <- tr[ tr$trait == i , ]
-  plot( ecdf(sub$magma_rel), add=TRUE, 
+  plot( ecdf(sub$magma_glo), add=TRUE, 
         col=viridis( n=length(pl) )[ which( names( sort(pl) ) == i)] )
 }
 
 # Make columns for the value
-tr$mag_rel_mean <- mm[ match( tr$trait, names(mm) ) ]
-tr$mag_rel_var  <- mv[ match( tr$trait, names(mv) ) ]
-tr$mag_rel_skew <- ms[ match( tr$trait, names(ms) ) ]
+tr$magma_mean <- pm[ match( tr$trait, names(mm) ) ]
+tr$magma_var  <- pv[ match( tr$trait, names(mv) ) ]
+tr$magma_skew <- ps[ match( tr$trait, names(ms) ) ]
+tr$magma_int  <- tr$magma_glo * tr$magma_mean
 
 # Add trait-level covariates to the basic model
-t_form1 <- update( sg_glm$formula, . ~ . + magma_rel*mag_rel_mean )
-t_form2 <- update( sg_glm$formula, . ~ . + magma_rel*mag_rel_var )
-t_form3 <- update( sg_glm$formula, . ~ . + magma_rel*mag_rel_skew )
-t_glm1  <- glm( t_form1, data=tr, family="binomial" )
-t_glm2  <- glm( t_form2, data=tr, family="binomial" )
-t_glm3  <- glm( t_form3, data=tr, family="binomial" )
-glm_to_forest_p( mod=t_glm1, suffix="" )
-glm_to_forest_p( mod=t_glm2, suffix="" )
-glm_to_forest_p( mod=t_glm3, suffix="" )
+sgt_cols <- c( sg_cols, "magma_mean", "pops_mean" )
+sgt_las <- cv.glmnet( x=as.matrix( tr[ , ..sgt_cols ] )[,-1], 
+                      foldid=as.integer( as.factor(tr$trait) ),
+                      y=tr[["causal"]], family="binomial" )
+sgt_coef <- coef( object=sgt_las, s="lambda.min" )
+lasso_to_forest( las=sgt_las, lambda_type="lambda.min", train=tr, rm_feats=bias_cols )
+
+# Look at how P(causal) looks at 25th, 50th, and 75th percentile...
+# ...for both magma_glo and magma_mean. Assuming other variables are at their mean.
+feat_cols <- sgt_coef@Dimnames[[1]][-1]
+cm <- colMeans( x=tr[ , ..feat_cols ] )
+df <- as.data.frame( matrix( rep( cm, 9), nrow=9, byrow=TRUE ) )
+names(df) <- names(cm)
+df$magma_glo  <- rep( quantile( tr$magma_glo,  probs=c( 0.1, 0.5, 0.9 ) ), 3 )
+df$magma_mean <- rep( quantile( tr$magma_mean, probs=c( 0.1, 0.5, 0.9 ) ), 
+                     rep( 3, 3 ) )
+df$magma_rel  <- 0
+df$magma_bil  <- 1
+df$dist_gene_rel <- -3
+df$p_causal <- as.vector( predict( object=sgt_las, s="lambda.min", type="response",
+                                   newx=as.matrix( df[ , feat_cols ] ) ) )
+
+# Plot
+plot( df$magma_glo, df$p_causal, type="n", las=1, 
+      # ylim=c( 0, max(df$p_causal) ),
+      xlab="magma_glo", ylab="P(causal)" )
+cols <- viridis(3)
+for( i in unique(df$magma_mean) ){
+  sub <- df[ df$magma_mean == i , ]
+  idx <- which( unique(df$magma_mean) == i )
+  lines( sub$magma_glo, sub$p_causal, col=cols[idx], lwd=3 )
+}
+legend( "topleft", legend=paste( "Mean MAGMA:", c( "10th", "50th", "90th" ) ), fill=cols )
 
 
 #-------------------------------------------------------------------------------
@@ -2111,7 +2119,7 @@ plot_logOR_relationship_smooth( data=tr, varname="ngenes_nearby" )
 
 # pLI
 plot_logOR_relationship_smooth( data=tr, varname="pLI" )
-plot_logOR_relationship_smooth( data=tr, varname="pLI_log10OR" )
+plot_logOR_relationship_smooth( data=tr, varname="pLI_log10" )
 
 # LOEUF
 plot_logOR_relationship_smooth( data=tr, varname="LOEUF" )
@@ -2128,11 +2136,6 @@ plot_logOR_relationship_smooth( data=tr, varname="gene_bp_log10" )
 plot_logOR_relationship_smooth( data=tr, varname="CDS_length" )
 plot_logOR_relationship_smooth( data=tr, varname="cds_bp_log10" )
 
-
-#-------------------------------------------------------------------------------
-#   Feature engineering: GLCs
-#-------------------------------------------------------------------------------
-
 # ABC_count
 plot_logOR_relationship_smooth( data=tr, varname="ABC_count" )
 
@@ -2146,6 +2149,11 @@ plot_logOR_relationship_smooth( data=tr, varname="Roadmap_count" )
 # Roadmap_length_per_type
 plot_logOR_relationship_smooth( data=tr, varname="Roadmap_length_per_type" )
 plot_logOR_relationship_smooth( data=tr, varname="roadmap_bp_log10" )
+
+
+#-------------------------------------------------------------------------------
+#   Feature engineering: GLCs
+#-------------------------------------------------------------------------------
 
 # promoter_count
 plot_logOR_relationship_smooth( data=tr, varname="promoter_count" )
@@ -2207,8 +2215,8 @@ summary(mod2)$coef
 # pLI
 mod1 <- glm( causal ~ pLI,                               data=tr, family="binomial" )
 mod2 <- glm( causal ~ pLI_lt_0.1,                        data=tr, family="binomial" )
-mod3 <- glm( causal ~ pLI_lt_0.1 + pLI_gt_0.9,           data=tr, family="binomial" )
-mod4 <- glm( causal ~ pLI_log10OR,                       data=tr, family="binomial" )
+mod3 <- glm( causal ~ pLI_lt_0.1 + pLI_lt_0.9,           data=tr, family="binomial" )
+mod4 <- glm( causal ~ pLI_log10,                       data=tr, family="binomial" )
 dev_exp(mod1)
 dev_exp(mod2)
 dev_exp(mod3)
