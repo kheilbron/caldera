@@ -42,6 +42,9 @@ dev_exp <- function( model, in_sample=TRUE ){
   return(de)
 }
 
+# logistic10: Convert a log10 odds ratio into a probability 
+logistic10 <- function(x) ( 1 / ( 1 + 10^-x ) )
+
 # logit10: Convert a probability into a log10 odds ratio
 logit10 <- function(p) log10( p / (1-p) )
 
@@ -285,10 +288,31 @@ lasso_to_forest <- function( las, lambda_type="lambda.1se", standardize=TRUE,
   mod3$col <- brewer.pal( n=3, name="Greens" )[3]
   mod3 <- mod3[ order(-mod3$effect) , ]
   
+  # Clean up labels
+  clean_labels <- TRUE
+  if(clean_labels){
+    row.names(mod3) <- sub( x=row.names(mod3), pattern="_rel", 
+                            replacement=", relative" )
+    row.names(mod3) <- sub( x=row.names(mod3), pattern="_glo", 
+                            replacement=", global" )
+    row.names(mod3) <- sub( x=row.names(mod3), pattern="_bil", 
+                            replacement=", best-in-locus" )
+    row.names(mod3) <- sub( x=row.names(mod3), pattern="pops", 
+                            replacement="PoPS" )
+    row.names(mod3) <- sub( x=row.names(mod3), pattern="magma", 
+                            replacement="MAGMA" )
+    row.names(mod3) <- sub( x=row.names(mod3), pattern="dist_gene", 
+                            replacement="Distance*" )
+    row.names(mod3) <- sub( x=row.names(mod3), pattern="coding", 
+                            replacement="Coding PIP*" )
+    row.names(mod3) <- sub( x=row.names(mod3), pattern="prior_n_genes_locus", 
+                            replacement="# local genes*" )
+  }
+  
   # Plot
   xmin <- min( c( 1, min(mod3$or) ) )
   forest_plot( df=mod3, colour.col="col", xlab="Odds ratio", xmin=xmin, 
-               xmax=xmax, margins=c(5,9,1,6), vert.line.pos=1, mtext.col=NULL,
+               xmax=xmax, margins=c(5,10,1,1), vert.line.pos=1, mtext.col=NULL,
                value.col="or", lo.col="or", hi.col="or" )
   par( mar=c(5,5,4,1) )
 }
@@ -303,8 +327,8 @@ n_inc_las <- function(loto_obj){
   # Extract whether a feature is present or not
   out <- list()
   for( i in loto_obj$trait ){
-    sub <- loto_obj$model$lasso[[i]]
-    sub2 <- sub$glmnet.fit$beta[ , sub$index[2] ]
+    sub <- loto_obj$model[[i]]
+    sub2 <- sub$glmnet.fit$beta[ , sub$index[1] ]
     out[[i]] <- sub2 != 0
   }
   out2 <- as.data.frame( do.call( rbind, out ) )
@@ -345,21 +369,23 @@ train_xgb <- function( data, feat_cols, bias_cols=NULL, glc_cols=NULL,
     feat_cols <- setdiff( feat_cols, glc_cols )
   }
   
-  # XGBoost (basic hyperparameter tuning): raw
+  # XGBoost with basic hyperparameter tuning
   tr_data <- data.frame( causal=as.factor( as.integer( data[["causal"]] ) ), 
                          model.matrix( ~.+1, data=data[ , ..feat_cols ] ) )
-  tr_task <- makeClassifTask( data=tr_data, target="causal" )
+  tr_task <- makeClassifTask( data=tr_data, target="causal", 
+                              blocking=as.factor(data$trait) )
   lrn <- makeLearner( cl="classif.xgboost", predict.type="prob",
                       objective="binary:logistic", verbose=0 )
-  rdesc <- makeResampleDesc( "CV", stratify=TRUE, iters=5L )
+  rdesc <- makeResampleDesc( method="CV", blocking.cv=TRUE, iters=length( unique(data$trait) ) )
   parallelStartSocket( cpus=detectCores() )
   pars <- makeParamSet( makeDiscreteParam( "booster",          values = "gbtree" ), 
-                        makeIntegerParam(  "nrounds",          lower = 50L,  upper = 200L ), 
-                        makeNumericParam(  "eta",              lower = 0.01, upper = 0.4 ), 
-                        makeIntegerParam(  "max_depth",        lower = 3L,   upper = 10L ), 
-                        makeNumericParam(  "min_child_weight", lower = 1L,   upper = 10L ), 
-                        makeNumericParam(  "subsample",        lower = 0.5,  upper = 1 ), 
-                        makeNumericParam(  "colsample_bytree", lower = 0.5,  upper = 1 ) )
+                        makeIntegerParam(  "nrounds",          lower = 75L,  upper = 175L ), 
+                        makeNumericParam(  "eta",              lower = 0.01, upper = 0.5 ), 
+                        makeIntegerParam(  "max_depth",        lower = 1L,   upper = 2L ), 
+                        makeNumericParam(  "min_child_weight", lower = 0,    upper = 8 ), 
+                        makeNumericParam(  "gamma",            lower = 0,    upper = 6 ), 
+                        makeNumericParam(  "subsample",        lower = 0.3,  upper = 1 ), 
+                        makeNumericParam(  "colsample_bytree", lower = 0.1,  upper = 1 ) )
   ctrl <- makeTuneControlRandom( maxit=maxit )
   mytune <- tuneParams( learner    = lrn, 
                         task       = tr_task, 
@@ -387,6 +413,8 @@ xgb_to_forest <- function( xgb_mod, suffix="_bilTRUE", xmax=NULL ){
   fi3 <- data.frame( row.names = sub( suffix, "", fi2$variable ),
                      fi        = fi2$importance,
                      col       = ifelse( fi2$importance == 0, "grey", "#70AD47" ) )
+  fi3 <- fi3[ order(-fi3$fi) , ]
+  
   # Plot
   forest_plot( df=fi3, colour.col="col", xlab="Feature importance", 
                margins=c(5,9,1,1), vert.line.pos=0, mtext.col=NULL, 
@@ -635,7 +663,7 @@ recalibrate_preds <- function( df, model, method,
   
   
   #-----------------------------------------------------------------------------
-  #   Loop through TCPs and generate calibration columns
+  #   Loop through TCPs and generate columns needed for recalibration
   #-----------------------------------------------------------------------------
   
   # Initialize output
@@ -723,7 +751,7 @@ loto <- function( data, method, feat_cols,
                preds    = data.table( trait      = data$trait,
                                       causal     = data$causal,
                                       pred       = NA,
-                                      calibrated = NA,
+                                      recal = NA,
                                       scaled     = NA ) )
   
   # Loop through traits (to leave out)
@@ -785,7 +813,7 @@ loto <- function( data, method, feat_cols,
     if( method %in% c( "elnet1", "elnet2" ) ){
       l_mod <- cv.glmnet( x=as.matrix( trn[ , ..feat_cols ] )[,-1], 
                           y=trn[["causal"]], family="binomial", 
-                          nfolds=14, alpha=0.5 )
+                          foldid=trn$foldid, alpha=0.5 )
     }
     
     # XGB
@@ -808,7 +836,7 @@ loto <- function( data, method, feat_cols,
     # Train a LASSO model to recalibrate model outputs
     cal_mod <- recalibration_model( data=preds_tr )
     
-    # Apply LASSO model to get meta-recalibrated predictions
+    # Apply LASSO model to get recalibrated predictions
     pred_cols <- c( "global", "relative" )
     preds_tr$modeled <- predict( object=cal_mod, s="lambda.min", type="response",
                                  newx=as.matrix( preds_tr[ , ..pred_cols ] ) )
@@ -826,7 +854,7 @@ loto <- function( data, method, feat_cols,
     # Predicted probabilities
     out$preds$pred[       out$preds$trait == i ] <- preds_te$original
     out$preds$scaled[     out$preds$trait == i ] <- preds_te$scaled
-    out$preds$calibrated[ out$preds$trait == i ] <- preds_te$modeled
+    out$preds$recal[ out$preds$trait == i ] <- preds_te$modeled
     out$preds$bil[        out$preds$trait == i ] <- preds_te$best
   }
   
@@ -846,9 +874,9 @@ plot_loto_pr <- function( loto_obj, type="original" ){
     prc <- pr.curve( scores.class0 = loto_obj$preds$pred[  loto_obj$preds$causal ], 
                      scores.class1 = loto_obj$preds$pred[ !loto_obj$preds$causal ], 
                      curve = TRUE )
-  }else if( type == "calibrated" ){
-    prc <- pr.curve( scores.class0 = loto_obj$preds$calibrated[  loto_obj$preds$causal ], 
-                       scores.class1 = loto_obj$preds$calibrated[ !loto_obj$preds$causal ], 
+  }else if( type == "recalibrated" ){
+    prc <- pr.curve( scores.class0 = loto_obj$preds$recal[  loto_obj$preds$causal ], 
+                       scores.class1 = loto_obj$preds$recal[ !loto_obj$preds$causal ], 
                        curve = TRUE )
   }else if( type == "scaled" ){
     prc <- pr.curve( scores.class0 = loto_obj$preds$scaled[  loto_obj$preds$causal ], 
@@ -933,6 +961,105 @@ plot_logOR_relationship_smooth <- function( data, varname ){
 
 
 #-------------------------------------------------------------------------------
+#   plot_logOR_relationship_model:  Modeled P(causal) v. a variable
+#-------------------------------------------------------------------------------
+
+plot_logOR_relationship_model <- function( data, model, var_prefix, 
+                                           qmin=0.1, qmax=0.9, 
+                                           g_trans_fun=NULL ){
+  
+  # Extract features from the model
+  feat_cols  <- model$glmnet$beta@Dimnames[[1]]
+  focal_cols <- grep( pattern=paste0( "^", var_prefix ), x=feat_cols, value=TRUE )
+  g_focal    <- grep( pattern="_glo$", x=focal_cols, value=TRUE )
+  r_focal    <- grep( pattern="_rel$", x=focal_cols, value=TRUE )
+  b_focal    <- grep( pattern="_bil$", x=focal_cols, value=TRUE )
+  
+  # Format data
+  xycols <- c( "causal", feat_cols )
+  data <- data[ , ..xycols ]
+  data <- as.data.frame( lapply( X=data[ , ..xycols ], FUN=as.numeric ) )
+  
+  # Create new, evenly-spaced values for the focal global feature
+  n      <- 100
+  xrange <- quantile( data[[g_focal]], probs=c( qmin, qmax ) )
+  xseq   <- seq( from=xrange[1], to=xrange[2], length=n )
+  
+  # Construct a dataset to make predictions in
+  # Set all global features to their mean from the training dataset
+  # Set all relative and BIL features to their maximum from the training dataset
+  feat_means <- apply( data[,-1], 2, mean )
+  feat_maxs  <- apply( data[,-1], 2, max )
+  feat_mixs  <- ifelse( grepl( pattern="_rel$|_bil$", x=names(feat_means) ),
+                        feat_maxs, feat_means )
+  mat <- matrix( rep( feat_mixs, n ), 
+                 nrow=n, ncol=length(feat_mixs), byrow=TRUE )
+  nx0 <- as.data.frame(mat)
+  names(nx0) <- names(feat_means)
+  
+  # Except for the focal global feature, which is from the previous step
+  # And the focal BIL feature, which is set to 0
+  # And the focal relative feature, which is set to its mean
+  nx0[[g_focal]] <- xseq
+  nx0[[b_focal]] <- 0
+  nx0[[r_focal]] <- feat_means[r_focal]
+  nx0$Relative   <- "Mean"
+  
+  # Copy the previous dataset, but now set the focal relative feature to its...
+  # ...best value and the focal BIL feature to 1, rbind
+  nx1 <- nx0
+  nx1[[r_focal]] <- feat_maxs[r_focal]
+  nx1[[b_focal]] <- 1
+  nx1$Relative <- "Best"
+  nx <- rbind( nx0, nx1)
+  
+  # Get predictions
+  pred <- predict( model, newx=as.matrix( nx[ , feat_cols ] ),
+                   s="lambda.min", type="response" )
+  nx$pred <- as.vector(pred)
+  df <- data.frame( x=nx[[g_focal]], y=nx$pred, Relative=nx$Relative )
+  
+  # If necessary, transform the scale of the global feature
+  if( !is.null(g_trans_fun) ){
+    df$x <- g_trans_fun(df$x)
+  }
+  
+  # Clean up labels
+  clean_label <- g_focal
+  clean_label <- sub( x=clean_label, pattern="_glo",      replacement="" )
+  clean_label <- sub( x=clean_label, pattern="pops",      replacement="PoPS" )
+  clean_label <- sub( x=clean_label, pattern="magma",     replacement="MAGMA z-score" )
+  clean_label <- sub( x=clean_label, pattern="dist_gene", replacement="Distance (bp)" )
+  clean_label <- sub( x=clean_label, pattern="coding",    replacement="Coding PIP" )
+  
+  # Prepare the histogram
+  hdf <- data.frame( x=data[[g_focal]] )
+  hdf <- hdf[ hdf$x >= xrange[1] & hdf$x <= xrange[2] , , drop=FALSE ]
+  if( !is.null(g_trans_fun) ){
+    hdf$x <- g_trans_fun(hdf$x)
+  }
+  
+  # Plot
+  p1 <- ggplot( hdf, aes(x=x) ) +
+    geom_histogram() +
+    labs( y="Count", x="" ) +
+    theme_bw() + 
+    ggtitle(clean_label)
+  p2 <- ggplot( df, aes( x=x, y=y, color=Relative ) ) +
+    geom_line( aes( y=y ), linewidth=1 ) + 
+    scale_y_continuous( trans="logit",
+                        breaks=c( 0.05, seq(0.1,0.7,0.1) ) ) +
+    geom_hline( yintercept=0.05, col="lightgrey" ) +
+    geom_hline( yintercept=0.7,  col="lightgrey" ) +
+    labs( y="Predicted causal probability", x=paste0( clean_label, ", global" ) ) +
+    scale_color_manual( values = brewer.pal( n=5, name="Greens" )[ c( 4, 3 ) ] ) +
+    theme_bw() + 
+    theme( legend.position="bottom" )
+  p1 + p2 + plot_layout( nrow=2, heights=c(1,3) )
+}
+
+
+#-------------------------------------------------------------------------------
 #///////////////////////////////////////////////////////////////////////////////
 #   Read in data
 #///////////////////////////////////////////////////////////////////////////////
@@ -952,6 +1079,7 @@ suppressPackageStartupMessages( library(data.table) )
 suppressPackageStartupMessages( library(e1071) )
 suppressPackageStartupMessages( library(glmnet) )
 suppressPackageStartupMessages( library(ggrepel) )
+suppressPackageStartupMessages( library(gridExtra) )
 suppressPackageStartupMessages( library(lme4) )
 suppressPackageStartupMessages( library(mlr) )
 suppressPackageStartupMessages( library(PRROC) )
@@ -971,6 +1099,7 @@ suppressPackageStartupMessages( library(xgboost) )
 cnc_map_file <- file.path( maindir, "causal_noncausal_trait_gene_pairs",
                            "causal_tgp_and_gene_mapping_data_300kb.tsv" )
 dt <- fread(file=cnc_map_file)
+dt <- dt[ order( dt$trait, dt$region, dt$cs_id, dt$start ) , ]
 
 # Split training and testing traits 
 # Sort traits by number of causal genes and pick every fifth one
@@ -1053,10 +1182,13 @@ f_cols <- unique( c( a_cols, glo_cols, rel_cols, "prior_n_genes_locus" ) )
 
 # Basic feature set
 pattern <- "^causal$|^pops_|^dist_gene_|^magma_|^coding_|^prior"
-s_cols  <- grep( pattern=pattern, x=f_cols, value=TRUE )
+b_cols  <- grep( pattern=pattern, x=f_cols, value=TRUE )
+
+# Full + GLC feature set
+fg_cols <- c( f_cols, bias_cols, glc_cols )
 
 # Basic + GLC feature set
-sg_cols <- c( s_cols, bias_cols, glc_cols )
+bg_cols <- c( b_cols, bias_cols, glc_cols )
 
 
 #-------------------------------------------------------------------------------
@@ -1073,22 +1205,20 @@ sg_cols <- c( s_cols, bias_cols, glc_cols )
 corrplot( cor( tr[ , ..f_cols ][,-1] ), order="hclust" )
 
 # Run LOTO
-fl_las1 <- loto( data=tr, method="lasso1", feat_cols=f_cols )
-fl_las2 <- loto( data=tr, method="lasso2", feat_cols=f_cols )
-# fl_xgb  <- loto( data=tr, method="xgb",    feat_cols=f_cols, maxit=100 )
+fl_las <- loto( data=tr, method="lasso2", feat_cols=f_cols )
+# fl_xgb <- loto( data=tr, method="xgb",    feat_cols=f_cols, maxit=100 )
 # saveRDS( object=fl_xgb, file=file.path( maindir, "loto/loto_full_xgb.rds" ) )
 fl_xgb  <- readRDS( file=file.path( maindir, "loto/loto_full_xgb.rds" ) )
 
 # Plot
-fl_las1_pr <- plot_loto_pr(fl_las1)
-fl_las2_pr <- plot_loto_pr(fl_las2)
-fl_xgb_pr  <- plot_loto_pr(fl_xgb)
+fl_las_pr <- plot_loto_pr(fl_las)
+fl_xgb_pr <- plot_loto_pr(fl_xgb)
 
 # AUPRCs
-f_pr <- rbind( fl_las1_pr, fl_las2_pr, fl_xgb_pr )
-dimnames(f_pr)[[1]] <- c( "LASSO1", "LASSO2", "XGBoost" )
+f_pr <- rbind( fl_xgb_pr, fl_las_pr )
+dimnames(f_pr)[[1]] <- c( "XGBoost", "LASSO" )
 bp <- barplot( height=f_pr[,"auprc"], las=1, ylim=c( 0, max(f_pr) ),
-               col=brewer.pal( n=NROW(f_pr), name="Greens" ) )
+               col=brewer.pal( n=5, name="Greens" )[1:2] )
 for( i in seq_along(bp) ){
   lines( x = c( bp[i],           bp[i] ), lwd=1.5,
          y = c( f_pr[ i, "lo" ], f_pr[ i, "hi" ] ) )
@@ -1107,7 +1237,7 @@ f_las <- cv.glmnet( x=as.matrix( tr[ , ..f_cols ] )[,-1],
 
 #-------------------------------------------------------------------------------
 #///////////////////////////////////////////////////////////////////////////////
-#   Basic model: Only use features derived from 5 methods
+#   Basic model
 #///////////////////////////////////////////////////////////////////////////////
 #-------------------------------------------------------------------------------
 
@@ -1116,28 +1246,26 @@ f_las <- cv.glmnet( x=as.matrix( tr[ , ..f_cols ] )[,-1],
 #-------------------------------------------------------------------------------
 
 # Raw feature correlations
-corrplot( cor( tr[ , ..s_cols ][,-1] ), order="hclust" )
+corrplot( cor( tr[ , ..b_cols ][,-1] ), order="hclust" )
 
 # Run LOTO
-sl_las1 <- loto( data=tr, method="lasso1", feat_cols=s_cols )
-sl_las2 <- loto( data=tr, method="lasso2", feat_cols=s_cols )
-# sl_xgb  <- loto( data=tr, method="xgb",    feat_cols=s_cols, maxit=100 )
-# saveRDS( object=sl_xgb, file=file.path( maindir, "loto/loto_basic_xgb.rds" ) )
-sl_xgb  <- readRDS( file=file.path( maindir, "loto/loto_basic_xgb.rds" ) )
+bl_las <- loto( data=tr, method="lasso2", feat_cols=b_cols )
+# bl_xgb <- loto( data=tr, method="xgb",    feat_cols=b_cols, maxit=100 )
+# saveRDS( object=bl_xgb, file=file.path( maindir, "loto/loto_basic_xgb.rds" ) )
+bl_xgb  <- readRDS( file=file.path( maindir, "loto/loto_basic_xgb.rds" ) )
 
 # Plot
-sl_las1_pr <- plot_loto_pr(sl_las1)
-sl_las2_pr <- plot_loto_pr(sl_las2)
-sl_xgb_pr  <- plot_loto_pr(sl_xgb)
+bl_las_pr <- plot_loto_pr(bl_las)
+bl_xgb_pr <- plot_loto_pr(bl_xgb)
 
 # AUPRCs
-s_pr <- rbind( sl_las1_pr, sl_las2_pr, sl_xgb_pr )
-dimnames(s_pr)[[1]] <- c( "LASSO1", "LASSO2", "XGBoost" )
-bp <- barplot( height=s_pr[,"auprc"], las=2, ylim=c( 0, max(s_pr) ),
-               col=brewer.pal( n=NROW(s_pr), name="Greens" ) )
+b_pr <- rbind( bl_xgb_pr, bl_las_pr )
+dimnames(b_pr)[[1]] <- c( "XGBoost", "LASSO" )
+bp <- barplot( height=b_pr[,"auprc"], las=1, ylim=c( 0, max(b_pr) ),
+               col=brewer.pal( n=5, name="Greens" )[1:2] )
 for( i in seq_along(bp) ){
   lines( x = c( bp[i],           bp[i] ), lwd=1.5,
-         y = c( s_pr[ i, "lo" ], s_pr[ i, "hi" ] ) )
+         y = c( b_pr[ i, "lo" ], b_pr[ i, "hi" ] ) )
 }
 
 
@@ -1146,7 +1274,7 @@ for( i in seq_along(bp) ){
 #-------------------------------------------------------------------------------
 
 # Make LASSO model
-s_las <- cv.glmnet( x=as.matrix( tr[ , ..s_cols ] )[,-1], 
+b_las <- cv.glmnet( x=as.matrix( tr[ , ..b_cols ] )[,-1], 
                     foldid=as.integer( as.factor(tr$trait) ),
                     y=tr[["causal"]], family="binomial" )
 
@@ -1162,59 +1290,85 @@ s_las <- cv.glmnet( x=as.matrix( tr[ , ..s_cols ] )[,-1],
 #-------------------------------------------------------------------------------
 
 # Raw feature correlations
-corrplot( cor( tr[ , ..sg_cols ][,-1] ), order="hclust" )
+corrplot( cor( tr[ , ..bg_cols ][,-1] ), order="hclust" )
 
 # Run LOTO
-sgl_las1 <- loto( data=tr, method="lasso1", feat_cols=sg_cols, bias_cols=bias_cols )
-sgl_las2 <- loto( data=tr, method="lasso2", feat_cols=sg_cols, bias_cols=bias_cols )
-# sgl_xgb  <- loto( data=tr, method="xgb",    feat_cols=sg_cols, bias_cols=bias_cols,
-#                   maxit=100 )
-# saveRDS( object=sgl_xgb, file=file.path( maindir, "loto/loto_basic_glc_xgb.rds" ) )
-sgl_xgb  <- readRDS( file=file.path( maindir, "loto/loto_basic_glc_xgb.rds" ) )
+bgl_las <- loto( data=tr, method="lasso2", feat_cols=bg_cols, bias_cols=bias_cols )
+
+# XBG LOTO
+bgl_xgb <- bl_xgb
 
 # Plot
-sgl_las1_pr <- plot_loto_pr(sgl_las1)
-sgl_las2_pr <- plot_loto_pr(sgl_las2)
-sgl_xgb_pr  <- plot_loto_pr(sgl_xgb)
+bgl_las_pr <- plot_loto_pr(bgl_las)
+bgl_xgb_pr <- plot_loto_pr(bgl_xgb)
 
 # AUPRCs
-sg_pr <- rbind( sgl_las1_pr, sgl_las2_pr, sgl_xgb_pr )
-dimnames(sg_pr)[[1]] <- c( "LASSO1", "LASSO2", "XGBoost" )
-bp <- barplot( height=sg_pr[,"auprc"], las=2, ylim=c( 0, max(sg_pr) ),
-               col=brewer.pal( n=NROW(sg_pr), name="Greens" ) )
+bg_pr <- rbind( bgl_xgb_pr, bgl_las_pr )
+dimnames(bg_pr)[[1]] <- c( "XGBoost", "LASSO" )
+bp <- barplot( height=bg_pr[,"auprc"], las=2, ylim=c( 0, max(bg_pr) ),
+               col=brewer.pal( n=5, name="Greens" )[1:2] )
 for( i in seq_along(bp) ){
-  lines( x = c( bp[i],            bp[i] ), lwd=1.5,
-         y = c( sg_pr[ i, "lo" ], sg_pr[ i, "hi" ] ) )
+  lines( x = c( bp[i],           bp[i] ), lwd=1.5,
+         y = c( bg_pr[ i, "lo" ], bg_pr[ i, "hi" ] ) )
 }
 
 
 #-------------------------------------------------------------------------------
-#   Calibrated AUPRC barplots
+#   Does adding GLCs change the proportion of high pLI genes selected?
+#-------------------------------------------------------------------------------
+
+# Combine predictions with/without GLCs and pLI features
+p_tol <- cbind( bl_las$preds[ , c( 1:3, 6 ) ],       
+                glc=bgl_las$preds[ , c( "pred", "bil" ) ], 
+                pLI_lt_0.1=tr$pLI_lt_0.1, pLI_lt_0.9=tr$pLI_lt_0.9, pLI=tr$pLI )
+
+# Plot predicted P(causal) with and without GLCs
+plot( p_tol$pred, p_tol$glc.pred )
+abline( a=0, b=1 )
+
+# Example for manuscript: most extreme decrease in P(causal) after adding GLCs
+summary(  abs( p_tol$pred - p_tol$glc.pred ) )
+quantile( abs( p_tol$pred - p_tol$glc.pred ), probs=seq(0.9,1,0.01) )
+diff <- abs( p_tol$pred - p_tol$glc.pred )
+idx <- which( diff == max(diff) )
+tr[ idx , ]
+p_tol[ idx , ]
+
+# Proportion of prioritized genes that are tolerant to mutation (pLI < 10%)
+mean( p_tol$pLI_lt_0.1[ p_tol$bil     == 1 & p_tol$pred      > 0.5 ] )
+mean( p_tol$pLI_lt_0.1[ p_tol$glc.bil == 1 & p_tol$glc.pred  > 0.5 ] )
+
+# Proportion of prioritized genes that are intolerant to mutation (pLI > 90%)
+mean( !p_tol$pLI_lt_0.9[ p_tol$bil     == 1 & p_tol$pred      > 0.5 ] )
+mean( !p_tol$pLI_lt_0.9[ p_tol$glc.bil == 1 & p_tol$glc.pred  > 0.5 ] )
+
+# Mean pLI of prioritized genes
+mean( p_tol$pLI[        p_tol$bil     == 1 & p_tol$pred      > 0.5 ] )
+mean( p_tol$pLI[        p_tol$glc.bil == 1 & p_tol$glc.pred  > 0.5 ] )
+
+
+#-------------------------------------------------------------------------------
+#   Recalibrated AUPRC barplots
 #-------------------------------------------------------------------------------
 
 # Plot
-sgl_las1c_pr <- plot_loto_pr( sgl_las1, type="calibrated" )
-sgl_las2c_pr <- plot_loto_pr( sgl_las2, type="calibrated" )
-sgl_xgbc_pr  <- plot_loto_pr( sgl_xgb,  type="calibrated" )
+bgl_lasc_pr <- plot_loto_pr( bgl_las, type="recalibrated" )
+bgl_xgbc_pr <- plot_loto_pr( bgl_xgb, type="recalibrated" )
 
 # AUPRCs
-sgc_pr <- rbind( sgl_las1c_pr, sgl_las2c_pr, sgl_xgbc_pr )
-dimnames(sgc_pr)[[1]] <- c( "LASSO1", "LASSO2", "XGBoost" )
-bp <- barplot( height=sgc_pr[,"auprc"], las=2, ylim=c( 0, max(sgc_pr) ),
-               col=brewer.pal( n=NROW(sgc_pr), name="Greens" ) )
+bc_pr <- rbind( bgl_xgbc_pr, bgl_lasc_pr )
+dimnames(bc_pr)[[1]] <- c( "XGBoost", "LASSO" )
+bp <- barplot( height=bc_pr[,"auprc"], las=2, ylim=c( 0, max(bc_pr) ),
+               col=brewer.pal( n=3, name="Greens" )[1:2] )
 for( i in seq_along(bp) ){
   lines( x = c( bp[i],             bp[i] ), lwd=1.5,
-         y = c( sgc_pr[ i, "lo" ], sgc_pr[ i, "hi" ] ) )
+         y = c( bc_pr[ i, "lo" ], bc_pr[ i, "hi" ] ) )
 }
 
 
 #-------------------------------------------------------------------------------
 #   Plot CALDERA precision-recall curves
 #-------------------------------------------------------------------------------
-
-# Precision and recall: POPS + local
-pnl_p <- sum( tr$causal & tr$pops_and_local ) / sum( tr$pops_and_local ) #precision
-pnl_r <- sum( tr$causal & tr$pops_and_local ) / sum( tr$causal )         #recall
 
 # Precision and recall: POPS + nearest gene
 pnn_p <- sum( tr$causal & tr$pops_and_nearest ) / sum( tr$pops_and_nearest ) #precision
@@ -1224,59 +1378,24 @@ pnn_r <- sum( tr$causal & tr$pops_and_nearest ) / sum( tr$causal )           #re
 cal_pr0 <- list()
 threshs <- c( 0, seq( 0.5, 0.9, 0.1 ) )
 for( i in seq_along(threshs) ){
-  tp           <- sum( sgl_las2$preds$causal & 
-                         sgl_las2$preds$bil == 1 & 
-                         sgl_las2$preds$calibrated >= threshs[i] )
-  p_denom      <- sum( sgl_las2$preds$bil == 1 & 
-                         sgl_las2$preds$calibrated >= threshs[i] )
-  r_denom      <- sum( sgl_las2$preds$causal )
+  tp           <- sum( bgl_las$preds$causal & 
+                         bgl_las$preds$bil == 1 & 
+                         bgl_las$preds$recal >= threshs[i] )
+  p_denom      <- sum( bgl_las$preds$bil == 1 & 
+                         bgl_las$preds$recal >= threshs[i] )
+  r_denom      <- sum( bgl_las$preds$causal )
   cal_pr0[[i]] <- c( threshold = threshs[i],
                      precision = tp/p_denom, 
                      recall    = tp/r_denom )
 }
-cal_pr <- as.data.frame( do.call( rbind, cal_pr0 ) )
+cal_pr     <- as.data.frame( do.call( rbind, cal_pr0 ) )
 cal_pr$col <- brewer.pal( n=NROW(cal_pr), name="Greens" )
 
 # Plot
-plot_loto_pr(sgl_las2, type="calibrated" )
+plot_loto_pr(bgl_las, type="recalibrated" )
 points( x=cal_pr$recall, y=cal_pr$precision, pch=19, cex=1.5, col=cal_pr$col )
-points( x=pnl_r,         y=pnl_p,            pch=19, cex=1.5, 
-        col=brewer.pal( n=4, name="Blues" )[2] )
 points( x=pnn_r,         y=pnn_p,            pch=19, cex=1.5, 
         col=brewer.pal( n=4, name="Blues" )[3] )
-
-
-#-------------------------------------------------------------------------------
-#   LASSO
-#-------------------------------------------------------------------------------
-
-# Run
-sg_las <- cv.glmnet( x=as.matrix( tr[ , ..sg_cols ] )[,-1], 
-                     foldid=as.integer( as.factor(tr$trait) ),
-                     y=tr[["causal"]], family="binomial" )
-
-# Plot LASSO coefficient path
-plot(sg_las)
-plot( sg_las$glmnet.fit, xvar="lambda", label=TRUE )
-abline( v=log(sg_las$lambda.min), lty=2, col="grey" )
-abline( v=log(sg_las$lambda.1se), lty=2, col="grey" )
-
-# Compare lambda.min and lambda.1se coefficients
-cbind( coef( sg_las, s="lambda.min" ),
-       coef( sg_las, s="lambda.1se" ),
-       0:sg_las$glmnet.fit$beta@Dim[1] )
-
-# Forest plot
-lasso_to_forest( las=sg_las, lambda_type="lambda.min", train=tr, rm_feats=bias_cols )
-
-# Train a calibration model
-recal_preds <- recalibrate_preds( df=tr, model=sg_las, method="lasso2", 
-                                         bias_cols=bias_cols )
-recal_mod   <- recalibration_model( data=recal_preds )
-
-# Save the LASSO1 model and the calibration model
-# saveRDS( object=sg_las,    file=file.path( maindir, "sg_las.rds" ) )
-# saveRDS( object=recal_mod, file=file.path( maindir, "sg_las_recal_mod.rds" ) )
 
 
 #-------------------------------------------------------------------------------
@@ -1285,18 +1404,62 @@ recal_mod   <- recalibration_model( data=recal_preds )
 #///////////////////////////////////////////////////////////////////////////////
 #-------------------------------------------------------------------------------
 
+# Figure 1: set up
+fig_dir   <- file.path( maindir, "figures" )
+fig1_file <- file.path( fig_dir, "figure1.jpg" )
+dir.create( path=fig_dir, showWarnings=FALSE, recursive=TRUE )
+jpeg( filename=fig1_file, width=600*4, height=300*4, res=75*4 )
+par( mfrow=c(1,2) )
+par( mar=c(6,5,1,1) )
+
+# Plot Figure 1A
+f_pr <- rbind( fl_xgb_pr, fl_las_pr )
+dimnames(f_pr)[[1]] <- c( "XGBoost", "LASSO" )
+bp <- barplot( height=f_pr[,"auprc"], las=2, 
+               ylab="AUPRC (±95% CI)", ylim=c( 0, 0.7 ),
+               col=brewer.pal( n=5, name="Greens" )[1:2] )
+for( i in seq_along(bp) ){
+  lines( x = c( bp[i],           bp[i] ), lwd=1.5,
+         y = c( f_pr[ i, "lo" ], f_pr[ i, "hi" ] ) )
+}
+
+# Figure 1B
+auprcs <- rbind( fl_las_pr, bl_las_pr, bgl_las_pr, bgl_lasc_pr )
+dimnames(auprcs)[[1]] <- c( "Full", "Basic", "+GLCs", "+Recalibrated" )
+bp1 <- barplot( height=auprcs[,1], las=2, 
+                ylab="AUPRC (±95% CI)", ylim=c( 0, 0.7 ),
+                col=brewer.pal( n=5, name="Greens" )[2:5] )
+for( i in seq_along(bp1) ){
+  lines( x = c( bp1[i],      bp1[i] ), lwd=1.5,
+         y = c( auprcs[i,2], auprcs[i,3] ) )
+}
+
+# Figure 1: wrap up
+par( mfrow=c(1,1) )
+dev.off()
+
+
+
+
 # Set up the data
-auprcs <- rbind( f_pr[,1], s_pr[,1], sg_pr[,1], sgc_pr[,1] )
-lo     <- rbind( f_pr[,2], s_pr[,2], sg_pr[,2], sgc_pr[,2] )
-hi     <- rbind( f_pr[,3], s_pr[,3], sg_pr[,3], sgc_pr[,3] )
-dimnames(auprcs)[[1]] <- c( "Full", "Basic", "+GLCs", "+calibrated" )
+auprcs <- rbind( f_pr[,1], b_pr[,1], bc_pr[,1] )
+lo     <- rbind( f_pr[,2], b_pr[,2], bc_pr[,2] )
+hi     <- rbind( f_pr[,3], b_pr[,3], bc_pr[,3] )
+dimnames(auprcs)[[1]] <- c( "Full", "Basic", "Recalibrated" )
+
+# Figure 1
+fig_dir   <- file.path( maindir, "figures" )
+fig1_file <- file.path( fig_dir, "figure1.jpg" )
+dir.create( path=fig_dir, showWarnings=FALSE, recursive=TRUE )
+jpeg( filename=fig1_file, width=600*4, height=300*4, res=75*4 )
+par( mfrow=c(1,2) )
+par( mar=c(5,5,1,1) )
 
 # Plot feature sets together
-par( mar=c(5,5,1,1) )
 bp1 <- barplot( height=t(auprcs), beside=TRUE, las=1, legend=TRUE, 
-                ylab="AUPRC (±95% CI)", ylim=c( 0, max(hi) ),
-                args.legend=list( x=1, y=0, xjust=0, yjust=0 ), 
-                col=brewer.pal( n=NCOL(auprcs), name="Greens" ) )
+                ylab="AUPRC (±95% CI)", ylim=c( 0, 1 ),
+                args.legend=list( x=1, y=1, xjust=0, yjust=1 ), 
+                col=brewer.pal( n=3, name="Greens" )[2:3] )
 for( i in seq_along(bp1) ){
   lines( x = c( bp1[i],   bp1[i] ), lwd=1.5,
          y = c( t(lo)[i], t(hi)[i] ) )
@@ -1304,27 +1467,143 @@ for( i in seq_along(bp1) ){
 
 # Plot ML methods together
 bp2 <- barplot( height=auprcs, beside=TRUE, las=1, legend=TRUE, 
-                ylab="AUPRC (±95% CI)", ylim=c( 0, max(hi) ),
-                args.legend=list( x=1, y=0, xjust=0, yjust=0 ),
+                ylab="AUPRC (±95% CI)", ylim=c( 0, 1 ),
+                args.legend=list( x=1, y=1, xjust=0, yjust=1 ),
                 col=brewer.pal( n=NROW(auprcs), name="Greens" ) )
 for( i in seq_along(bp2) ){
   lines( x = c( bp2[i], bp2[i] ), lwd=1.5,
          y = c( lo[i],  hi[i] ) )
 }
+par( mfrow=c(1,2) )
+dev.off()
 
 
 #-------------------------------------------------------------------------------
 #///////////////////////////////////////////////////////////////////////////////
-#   Calibrate model outputs
+#   Calibration plots
 #///////////////////////////////////////////////////////////////////////////////
 #-------------------------------------------------------------------------------
 
-cal_plot_logistic( .data=sgl_las2$preds, truth=causal, estimate=pred ) +
+# Figure 2
+fig2_file <- file.path( fig_dir, "figure2.jpg" )
+jpeg( filename=fig2_file, width=600*4, height=300*4, res=75*4 )
+p1 <- cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=pred, 
+                   conf_level=0.95 ) +
   ggtitle("Original predictions")
-cal_plot_logistic( .data=sgl_las2$preds, truth=causal, estimate=calibrated ) +
-  ggtitle("Calibrated predictions")
-cal_plot_logistic( .data=sgl_las2$preds, truth=causal, estimate=scaled ) +
+p2 <- cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=recal, 
+                   conf_level=0.95 ) +
+  ggtitle("Recalibrated predictions")
+grid.arrange( p1, p2, ncol=2 )
+dev.off()
+
+# Scaled (for comparison)
+cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=scaled, 
+                   conf_level=0.95 ) +
   ggtitle("Locally-scaled predictions")
+
+# How do predictions differ before/after calibration?
+# Plot predicted P(causal) with and without GLCs
+plot( bgl_las$preds$pred, bgl_las$preds$recal )
+abline( a=0, b=1 )
+
+# Example for manuscript: most extreme decrease in P(causal) after adding GLCs
+summary(  abs( bgl_las$preds$pred - bgl_las$preds$recal ) )
+quantile( abs( bgl_las$preds$pred - bgl_las$preds$recal ), probs=seq(0.9,1,0.01) )
+diff <- abs( bgl_las$preds$pred - bgl_las$preds$recal )
+idx <- which( diff == max(diff) )
+tr[ idx , ]
+bgl_las$preds[ idx , ]
+
+
+#-------------------------------------------------------------------------------
+#   LASSO
+#-------------------------------------------------------------------------------
+
+# Run
+bg_las <- cv.glmnet( x=as.matrix( tr[ , ..bg_cols ] )[,-1], 
+                     foldid=as.integer( as.factor(tr$trait) ),
+                     y=tr[["causal"]], family="binomial" )
+
+# Plot LASSO coefficient path
+plot(bg_las)
+plot( bg_las$glmnet.fit, xvar="lambda", label=TRUE )
+abline( v=log(bg_las$lambda.min), lty=2, col="grey" )
+abline( v=log(bg_las$lambda.1se), lty=2, col="grey" )
+
+# Compare lambda.min and lambda.1se coefficients
+cbind( coef( bg_las, s="lambda.min" ),
+       coef( bg_las, s="lambda.1se" ),
+       0:bg_las$glmnet.fit$beta@Dim[1] )
+
+# Forest plot without bias features
+fig3_file <- file.path( fig_dir, "figure3.jpg" )
+jpeg( filename=fig3_file, width=375*4, height=300*4, res=75*4 )
+par( mar=c(5,7,1,1) )
+lasso_to_forest( las=bg_las, lambda_type="lambda.min", train=tr, rm_feats=bias_cols )
+dev.off()
+
+# Forest plot with bias features
+lasso_to_forest( las=bg_las, lambda_type="lambda.min", train=tr )
+
+# Train a calibration model
+recal_preds <- recalibrate_preds( df=tr, model=bg_las, method="lasso2", 
+                                  bias_cols=bias_cols )
+recal_mod   <- recalibration_model( data=recal_preds )
+recal_preds$recal <- predict( object=recal_mod, s="lambda.min", type="response",
+                                   newx=as.matrix( 
+                                     recal_preds[ , c( "global", "relative" ) ] ) )
+
+# Save the LASSO1 model and the calibration model
+# saveRDS( object=bg_las,    file=file.path( maindir, "bg_las.rds" ) )
+# saveRDS( object=recal_mod, file=file.path( maindir, "bg_las_recal_mod.rds" ) )
+
+prc <- pr.curve( scores.class0 = recal_preds$recal[  recal_preds$causal ], 
+                 scores.class1 = recal_preds$recal[ !recal_preds$causal ], 
+                 curve = TRUE )
+ci <- aucpr.conf.int.expit( estimate = prc$auc.integral, 
+                            num.pos  = sum(recal_preds$causal) )
+names(ci) <- c( "lo", "hi" )
+c( auprc=prc$auc.integral, ci )
+
+
+
+
+# Plot the effect of selected features on P(causal)
+fig4a_file <- file.path( fig_dir, "figure4a.jpg" )
+jpeg( filename=fig4a_file, width=300*4, height=400*4, res=75*4 )
+plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="pops", 
+                               qmin=0.05, qmax=0.95, g_trans_fun=NULL )
+dev.off()
+
+# Plot the effect of selected features on P(causal)
+fig4b_file <- file.path( fig_dir, "figure4b.jpg" )
+jpeg( filename=fig4b_file, width=300*4, height=400*4, res=75*4 )
+plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="magma", 
+                               qmin=0.05, qmax=0.95, g_trans_fun=NULL )
+dev.off()
+
+fig4c_file <- file.path( fig_dir, "figure4c.jpg" )
+jpeg( filename=fig4c_file, width=300*4, height=400*4, res=75*4 )
+plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="dist_gene", 
+                               qmin=0.05, qmax=0.95, 
+                               g_trans_fun=function(x) 10^-x - 1e3 )
+dev.off()
+
+fig4d_file <- file.path( fig_dir, "figure4d.jpg" )
+jpeg( filename=fig4d_file, width=300*4, height=400*4, res=75*4 )
+plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="coding", 
+                               qmin=0, qmax=1, g_trans_fun=logistic10 )
+dev.off()
+
+
+#-------------------------------------------------------------------------------
+#   XGBoost
+#-------------------------------------------------------------------------------
+
+bg_xgb <- train_xgb( data=tr, feat_cols=bg_cols[-1], maxit=500, 
+                     bias_cols=bias_cols )
+xgb_to_forest( xgb_mod=bg_xgb, suffix="", xmax=NULL )
+plot_fi(bg_xgb)
 
 
 #-------------------------------------------------------------------------------
@@ -1363,7 +1642,7 @@ tr$pops_skew <- ps[ match( tr$trait, names(ps) ) ]
 tr$pops_int  <- tr$pops_glo * tr$pops_mean
 
 # Add trait-level covariates to the basic model
-sgt_cols <- c( sg_cols, "pops_mean", "pops_int" )
+sgt_cols <- c( bg_cols, "pops_mean", "pops_int" )
 sgt_las <- cv.glmnet( x=as.matrix( tr[ , ..sgt_cols ] )[,-1], 
                       foldid=as.integer( as.factor(tr$trait) ),
                       y=tr[["causal"]], family="binomial" )
@@ -1425,7 +1704,7 @@ tr$magma_skew <- ps[ match( tr$trait, names(ms) ) ]
 tr$magma_int  <- tr$magma_glo * tr$magma_mean
 
 # Add trait-level covariates to the basic model
-sgt_cols <- c( sg_cols, "magma_mean", "pops_mean" )
+sgt_cols <- c( bg_cols, "magma_mean", "pops_mean" )
 sgt_las <- cv.glmnet( x=as.matrix( tr[ , ..sgt_cols ] )[,-1], 
                       foldid=as.integer( as.factor(tr$trait) ),
                       y=tr[["causal"]], family="binomial" )
@@ -1466,9 +1745,9 @@ legend( "topleft", legend=paste( "Mean MAGMA:", c( "10th", "50th", "90th" ) ), f
 
 # Which polynomial leads to the biggest improvement in model fit?
 poly_lrt <- function(variable){
-  u_form <- update( sg_glm$formula, paste0( "~ . - ", variable, " + poly(", variable, ", 2)" ) )
+  u_form <- update( bg_glm$formula, paste0( "~ . - ", variable, " + poly(", variable, ", 2)" ) )
   u_glm  <- glm( formula=u_form, data=tr, family="binomial" )
-  anova( sg_glm, u_glm, test="Chi" )$`Pr(>Chi)`[2]
+  anova( bg_glm, u_glm, test="Chi" )$`Pr(>Chi)`[2]
 }
 poly_lrt( variable="pops_glo" )
 poly_lrt( variable="pops_rel" )
@@ -1485,7 +1764,7 @@ poly_lrt( variable="Roadmap_count" )
 #-------------------------------------------------------------------------------
 
 # Add all possible interactions
-i_form  <- update( sg_glm$formula, . ~ (.)^2 )
+i_form  <- update( bg_glm$formula, . ~ (.)^2 )
 
 # Perform backwards stepwise model selection
 # Remove features predicted to have P > 0.05/5
@@ -1571,7 +1850,7 @@ plot_pr( model=f_xgb, test_df=te )
 
 #-------------------------------------------------------------------------------
 #///////////////////////////////////////////////////////////////////////////////
-#   Basic: GLM + XGB
+#   Basic + GLC: GLM
 #///////////////////////////////////////////////////////////////////////////////
 #-------------------------------------------------------------------------------
 
@@ -1580,78 +1859,18 @@ plot_pr( model=f_xgb, test_df=te )
 #-------------------------------------------------------------------------------
 
 # Run regression
-s_form <- make_formula( lhs=s_cols[1], rhs=s_cols[-1] )
-s_glm0 <- glm( formula=s_form, data=tr, family="binomial" )
-s_glm  <- stats::step( object=s_glm0, k=qchisq( 1-0.05/5, df=1 ), trace=0 )
+bg_form <- make_formula( lhs=bg_cols[1], rhs=bg_cols[-1] )
+bg_glm0 <- glm( formula=bg_form, data=tr, family="binomial" )
+bg_glm  <- stats::step( object=bg_glm0, k=qchisq( 1-0.05/5, df=1 ) )
 
 # Extract deviance explained
-dev_exp( model=s_glm, in_sample=TRUE  ) / dev_exp( model=f_glm, in_sample=TRUE )
-dev_exp( model=s_glm, in_sample=FALSE ) / dev_exp( model=f_glm, in_sample=FALSE )
+dev_exp( model=bg_glm, in_sample=TRUE  ) / dev_exp( model=fg_glm, in_sample=TRUE  )
+dev_exp( model=bg_glm, in_sample=FALSE ) / dev_exp( model=fg_glm, in_sample=FALSE )
 
 # Forest plot
-glm_to_forest_p( mod=s_glm, xmax=NULL )
-
-
-#-------------------------------------------------------------------------------
-#   XGBoost
-#-------------------------------------------------------------------------------
-
-s_xgb <- train_xgb( data=tr, feat_cols=s_cols[-1], maxit=100 )
-xgb_to_forest( xgb_mod=s_xgb, suffix="", xmax=NULL )
-plot_fi(s_xgb)
-
-
-#-------------------------------------------------------------------------------
-#   Assess performance of the models in the test set
-#-------------------------------------------------------------------------------
-
-# AUPRC
-s_pr <- auprc_test_set( test_df  = te, 
-                        rand_mod = rand_mod,
-                        glm_mod  = s_glm, 
-                        las_mod  = s_las, 
-                        xgb_mod  = s_xgb, 
-                        ymax     = 1 )
-f_pr; s_pr; s_pr/f_pr
-
-# PR curves
-plot_pr( model=s_glm, test_df=te )
-plot_pr( model=s_xgb, test_df=te )
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Basic + GLC: GLM + XGB
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# Run regression
-sg_form <- make_formula( lhs=sg_cols[1], rhs=sg_cols[-1] )
-sg_glm0 <- glm( formula=sg_form, data=tr, family="binomial" )
-sg_glm  <- stats::step( object=sg_glm0, k=qchisq( 1-0.05/5, df=1 ) )
-
-# Extract deviance explained
-dev_exp( model=sg_glm, in_sample=TRUE  ) / dev_exp( model=fg_glm, in_sample=TRUE  )
-dev_exp( model=sg_glm, in_sample=FALSE ) / dev_exp( model=fg_glm, in_sample=FALSE )
-
-# Forest plot
-glm_to_forest_p( mod=sg_glm, xmax=NULL )
-glm_to_forest(   mod=sg_glm, suffix="", standardize=FALSE )
-glm_to_forest(   mod=sg_glm, suffix="", standardize=TRUE )
-
-
-#-------------------------------------------------------------------------------
-#   XGBoost
-#-------------------------------------------------------------------------------
-
-sg_xgb <- train_xgb( data=tr, feat_cols=sg_cols[-1], maxit=100, 
-                     bias_cols=bias_cols )
-xgb_to_forest( xgb_mod=sg_xgb, suffix="", xmax=NULL )
-plot_fi(sg_xgb)
+glm_to_forest_p( mod=bg_glm, xmax=NULL )
+glm_to_forest(   mod=bg_glm, suffix="", standardize=FALSE )
+glm_to_forest(   mod=bg_glm, suffix="", standardize=TRUE )
 
 
 #-------------------------------------------------------------------------------
@@ -1659,36 +1878,36 @@ plot_fi(sg_xgb)
 #-------------------------------------------------------------------------------
 
 # AUPRC: REMOVE gene-level covariates
-sg_pr1 <- auprc_test_set( test_df   = te, 
-                          rand_mod  = rand_mod,
-                          glm_mod   = sg_glm, 
-                          las_mod   = sg_las, 
-                          xgb_mod   = sg_xgb1, 
-                          ymax      = 1, 
-                          bias_cols = bias_cols, 
-                          glc_cols  = glc_cols,
-                          rm_glc    = TRUE )
-fg_pr1; sg_pr1; sg_pr1/fg_pr1
-og_pr1; sg_pr1; sg_pr1/og_pr1
+b_pr1 <- auprc_test_set( test_df   = te, 
+                         rand_mod  = rand_mod,
+                         glm_mod   = bg_glm, 
+                         las_mod   = bg_las, 
+                         xgb_mod   = bg_xgb1, 
+                         ymax      = 1, 
+                         bias_cols = bias_cols, 
+                         glc_cols  = glc_cols,
+                         rm_glc    = TRUE )
+fg_pr1; b_pr1; b_pr1/fg_pr1
+og_pr1; b_pr1; b_pr1/og_pr1
 
 # AUPRC: KEEP gene-level covariates
-sg_pr2 <- auprc_test_set( test_df   = te, 
-                          rand_mod  = rand_mod,
-                          glm_mod   = sg_glm, 
-                          las_mod   = sg_las, 
-                          xgb_mod   = sg_xgb2, 
-                          ymax      = 1, 
-                          bias_cols = bias_cols )
-fg_pr2; sg_pr2; sg_pr2/fg_pr2
-og_pr2; sg_pr2; sg_pr2/og_pr2
+b_pr2 <- auprc_test_set( test_df   = te, 
+                         rand_mod  = rand_mod,
+                         glm_mod   = bg_glm, 
+                         las_mod   = bg_las, 
+                         xgb_mod   = bg_xgb2, 
+                         ymax      = 1, 
+                         bias_cols = bias_cols )
+fg_pr2; b_pr2; b_pr2/fg_pr2
+og_pr2; b_pr2; b_pr2/og_pr2
 
 # PR curves: REMOVE gene-level covariates
-plot_pr( model=sg_glm,  test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-plot_pr( model=sg_xgb1, test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+plot_pr( model=bg_glm,  test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
+plot_pr( model=bg_xgb1, test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
 
 # PR curves: KEEP gene-level covariates
-plot_pr( model=sg_glm,  test_df=te, bias_cols=bias_cols )
-plot_pr( model=sg_xgb2, test_df=te, bias_cols=bias_cols )
+plot_pr( model=bg_glm,  test_df=te, bias_cols=bias_cols )
+plot_pr( model=bg_xgb2, test_df=te, bias_cols=bias_cols )
 
 
 #-------------------------------------------------------------------------------
@@ -1846,7 +2065,7 @@ plot_logOR_relationship_smooth( data=tr[ tr$smr_glo != median(tr$smr_glo) , ],
 # Plot relationship: coding
 plot_logOR_relationship_smooth( data=tr[ !is.na(tr$coding_prob) , ], varname="coding_prob" )
 plot_logOR_relationship_smooth( data=tr, varname="coding_glo" )
-plot_logOR_relationship_smooth( data=tr[ tr$coding_glo != -3 , ], 
+plot_logOR_relationship_smooth( data=tr[ tr$coding_glo != min(tr$coding_glo) , ], 
                                 varname="coding_glo" )
 
 # DEPICT and NetWAS
@@ -2293,12 +2512,12 @@ barplot( aic_glm, las=2, col=cols )
 par( mar=c(5,5,1,1 ) )
 
 # Test set AUPRC
-au1 <- c( f_pr1["GLM"], o_pr1["GLM"], s_pr1["GLM"],
-          f_pr1["LASSO"], o_pr1["LASSO"], s_pr1["LASSO"],
-          f_pr1["XGBoost"], o_pr1["XGBoost"], s_pr1["XGBoost"] )
-au2 <- c( f_pr2["GLM"],     o_pr2["GLM"],     s_pr2["GLM"],
-          f_pr2["LASSO"],   o_pr2["LASSO"],   s_pr2["LASSO"],
-          f_pr2["XGBoost"], o_pr2["XGBoost"], s_pr2["XGBoost"] )
+au1 <- c( f_pr1["GLM"], o_pr1["GLM"], b_pr1["GLM"],
+          f_pr1["LASSO"], o_pr1["LASSO"], b_pr1["LASSO"],
+          f_pr1["XGBoost"], o_pr1["XGBoost"], b_pr1["XGBoost"] )
+au2 <- c( f_pr2["GLM"],     o_pr2["GLM"],     b_pr2["GLM"],
+          f_pr2["LASSO"],   o_pr2["LASSO"],   b_pr2["LASSO"],
+          f_pr2["XGBoost"], o_pr2["XGBoost"], b_pr2["XGBoost"] )
 names(au1) <- c( "GLM, full model",     "GLM, reduced model",     "GLM, basic model",
                  "LASSO, full model",   "LASSO, reduced model",   "LASSO, basic model",
                  "XGBoost, full model", "XGBoost, reduced model", "XGBoost, basic model" )
@@ -2368,6 +2587,33 @@ tree_fit <- tree_spec %>%
 
 # Plot the decision tree
 rpart.plot( tree_fit$fit, type = 4, under = TRUE, box.palette = "auto")
+
+
+#-------------------------------------------------------------------------------
+#   Tune XBGoost hyperparameters
+#-------------------------------------------------------------------------------
+
+# Extract tuned XGB hyperparameter values
+model <- fl_xgb
+par_names <- c( "nrounds", "eta", "max_depth", "min_child_weight", "gamma",
+                "subsample", "colsample_bytree" )
+hyp0 <- list()
+for( i in seq_along(model) ){
+  hyp0[[ names(model)[i] ]] <- unlist( model[[i]]$learner$par.vals[par_names] )
+}
+hyp <- as.data.frame( do.call( rbind, hyp0 ) )
+
+# Plot
+corrplot( cor(hyp), order="hclust" )
+plot( hyp$max_depth, hyp$eta, pch=19, col="steelblue", cex=2, las=1,
+      xlab="Number of rounds", ylab="Learning rate (eta)" )
+hist( hyp[[1]], col="steelblue", breaks=10, main=par_names[1], las=1, xlim=c( 75, 175 ) )
+hist( hyp[[2]], col="steelblue", breaks=10, main=par_names[2], las=1, xlim=c( 0.01, 0.5 ) )
+hist( hyp[[3]], col="steelblue", breaks=10, main=par_names[3], las=1, xlim=c( 1, 2 ) )
+hist( hyp[[4]], col="steelblue", breaks=10, main=par_names[4], las=1, xlim=c( 0, 8 ) )
+hist( hyp[[5]], col="steelblue", breaks=10, main=par_names[5], las=1, xlim=c( 0, 6 ) )
+hist( hyp[[6]], col="steelblue", breaks=10, main=par_names[6], las=1, xlim=c( 0.3, 1 ) )
+hist( hyp[[7]], col="steelblue", breaks=10, main=par_names[7], las=1, xlim=c( 0.1, 1 ) )
 
 
 #-------------------------------------------------------------------------------

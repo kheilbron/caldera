@@ -116,7 +116,6 @@ m$dist_tss_glo      <- -log10( m$distance_tss + 1e3 )
 
 # TWAS
 m$twas_p <- ifelse( m$twas_p == 0, .Machine$double.xmin, m$twas_p )
-m$twas_logp_glo <- ifelse( is.na(m$twas_p), -log10(1), -log10(m$twas_p) )
 m$twas_glo <- ifelse( is.na(m$twas_z), 0, abs(m$twas_z) )
 
 # E-P correlation
@@ -171,157 +170,49 @@ m$netwas_bon_score_glo[ is.na(m$netwas_bon_score_glo) ] <- 0
 
 
 #-------------------------------------------------------------------------------
-#   Add columns for relative features
+#   Add columns for relative and best-in-locus features
 #-------------------------------------------------------------------------------
 
-m$pops_rel                <- as.numeric(NA)
-m$dist_gene_rel           <- as.numeric(NA)
-m$dist_tss_rel            <- as.numeric(NA)
-m$twas_rel                <- as.numeric(NA)
-m$corr_liu_rel            <- as.numeric(NA)
-m$corr_and_rel            <- as.numeric(NA)
-m$corr_uli_rel            <- as.numeric(NA)
-m$pchic_jung_rel          <- as.numeric(NA)
-m$pchic_jav_rel           <- as.numeric(NA)
-m$clpp_rel                <- as.numeric(NA)
-m$abc_rel                 <- as.numeric(NA)
-m$magma_rel               <- as.numeric(NA)
-m$smr_rel                 <- as.numeric(NA)
-m$coding_rel              <- as.numeric(NA)
-m$depict_z_rel            <- as.numeric(NA)
-m$netwas_score_rel        <- as.numeric(NA)
-m$netwas_bon_score_rel    <- as.numeric(NA)
-tcp_m <- paste( m$trait, m$region, m$cs_id, sep="_" )
-for( i in unique(tcp_m) ){
+# Set up global feature columns and TCPs
+glo_cols <- grep( "_glo$", x=names(m), value=T)
+tcp_m    <- paste( m$trait, m$region, m$cs_id, sep="_" )
+
+# Loop through global columns
+for( j in glo_cols ){
   
-  # Subset
-  sub <- m[ tcp_m == i , ]
+  # Initialize relative and best-in-locus columns
+  rel_col <- sub( pattern="_glo$", replacement="_rel", x=j )
+  bil_col <- sub( pattern="_glo$", replacement="_bil", x=j )
+  m[[rel_col]] <- as.numeric(NA)
+  m[[bil_col]] <- as.logical(NA)
   
-  # Compute L2G-like values
-  pops_vals     <- sub$pops_glo             - max(sub$pops_glo)
-  gene_vals     <- sub$dist_gene_glo        - max(sub$dist_gene_glo)
-  tss_vals      <- sub$dist_tss_glo         - max(sub$dist_tss_glo)
-  twas_vals     <- sub$twas_glo             - max(sub$twas_glo)
-  liu_vals      <- sub$corr_liu_glo         - max(sub$corr_liu_glo)
-  and_vals      <- sub$corr_and_glo         - max(sub$corr_and_glo)
-  uli_vals      <- sub$corr_uli_glo         - max(sub$corr_uli_glo)
-  jung_vals     <- sub$pchic_jung_glo       - max(sub$pchic_jung_glo)
-  jav_vals      <- sub$pchic_jav_glo        - max(sub$pchic_jav_glo)
-  clpp_vals     <- sub$clpp_glo             - max(sub$clpp_glo)
-  abc_vals      <- sub$abc_glo              - max(sub$abc_glo)
-  magma_vals    <- sub$magma_glo            - max(sub$magma_glo)
-  smr_vals      <- sub$smr_glo              - max(sub$smr_glo)
-  coding_vals   <- sub$coding_glo           - max(sub$coding_glo)
-  depict_vals   <- sub$depict_z_glo         - max(sub$depict_z_glo)
-  netwas_vals   <- sub$netwas_score_glo     - max(sub$netwas_score_glo)
-  netwas_b_vals <- sub$netwas_bon_score_glo - max(sub$netwas_bon_score_glo)
-  
-  # Replace: POPS
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "pops_rel", 
-       value = pops_vals )
-  
-  # Replace: gene body
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "dist_gene_rel", 
-       value = gene_vals )
-  
-  # Replace: TSS
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "dist_tss_rel", 
-       value = tss_vals )
-  
-  # Replace: TWAS
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "twas_rel", 
-       value = twas_vals )
-  
-  # Replace: E-P Liu
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "corr_liu_rel", 
-       value = liu_vals )
-  
-  # Replace: E-P Andersson
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "corr_and_rel", 
-       value = and_vals )
-  
-  # Replace: E-P Ulirsch
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "corr_uli_rel", 
-       value = uli_vals )
-  
-  # Replace: Jung PCHi-C
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "pchic_jung_rel", 
-       value = jung_vals )
-  
-  # Replace: Javierre PCHi-C
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "pchic_jav_rel", 
-       value = jav_vals )
-  
-  # Replace: CLPP
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "clpp_rel", 
-       value = clpp_vals )
-  
-  # Replace: ABC
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "abc_rel", 
-       value = abc_vals )
-  
-  # Replace: MAGMA z
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "magma_rel", 
-       value = magma_vals )
-  
-  # Replace: SMR
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "smr_rel", 
-       value = smr_vals )
-  
-  # Replace: coding
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "coding_rel", 
-       value = coding_vals )
-  
-  # Replace: DEPICT
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "depict_z_rel", 
-       value = depict_vals )
-  
-  # Replace: NetWAS score
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "netwas_score_rel", 
-       value = netwas_vals )
-  
-  # Replace: NetWAS bon score
-  set( x     = m, 
-       i     = which( tcp_m == i ), 
-       j     = "netwas_bon_score_rel", 
-       value = netwas_b_vals )
+  # Loop through TCPs
+  for( i in unique(tcp_m) ){
+    
+    # Subset
+    sub <- m[ tcp_m == i , ]
+    
+    # Compute relative and best-in-locus values
+    r_vals <- sub[[j]] - max( sub[[j]] )
+    b_vals <- r_vals == 0 & sum( r_vals == 0 ) == 1
+    
+    # Insert relative values into the main data table
+    set( x     = m, 
+         i     = which( tcp_m == i ), 
+         j     = rel_col, 
+         value = r_vals )
+    
+    # Insert best-in-locus values into the main data table
+    set( x     = m, 
+         i     = which( tcp_m == i ), 
+         j     = bil_col, 
+         value = b_vals ) 
+  }
 }
 
 
 #-------------------------------------------------------------------------------
-#   Add columns for best-in-locus features
+#   Add some final V2G columns
 #-------------------------------------------------------------------------------
 
 # Add BIL
