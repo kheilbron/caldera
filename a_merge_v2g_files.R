@@ -36,7 +36,8 @@ j1 <- left_join( x=vg1, y=vg2[,..gcols_vg2] )
 j2 <- left_join( x=j1, y=vg3 )
 
 # Remove genes >300kb from the lead variant and non-canonical ENSGIDs
-j3 <- j2[ j2$distance_genebody < 300e3 & j2$ensgid %in% gencode$ENSGID , ]
+# j3 <- j2[ j2$distance_genebody < 300e3 & j2$ensgid %in% gencode$ENSGID , ]
+j3 <- j2[ j2$ensgid %in% gencode$ENSGID , ]
 NROW(vg1); NROW(vg2); NROW(vg3)
 NROW(j1); NROW(j3)
 

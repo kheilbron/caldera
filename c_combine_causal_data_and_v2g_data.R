@@ -64,20 +64,8 @@ cnc <- fread(cnc_file)
 vg_file <- file.path( maindir, "v2g_file.tsv" )
 vg <- fread(vg_file)
 
-# Subset both to shared trait-ENSGID-CS triplets (TECs)
-# Note: yields about half as many missed causal/non-causal TGPs than using gene
-tec_cnc <- paste( cnc$trait, cnc$ensgid, cnc$cs_id, sep="_" )
-tec_vg  <- paste( vg$trait,  vg$ensgid,  vg$cs_id,  sep="_" )
-tec_shared <- intersect( tec_cnc, tec_vg )
-cnc2 <- cnc[ match( tec_shared, tec_cnc ) , ]
-vg2  <- vg[  match( tec_shared, tec_vg ) , ]
-
-# Explore: What percentage of triplets were shared?
-length(tec_shared) /  length(tec_cnc) #93% are found in the causal gene dataset
-length(tec_shared) /  length(tec_vg)  #8% are found in the V2G dataset
-
 # Merge the two datasets
-gcols_vg <- c( "trait", "gene", "ensgid", "region", "cs_id", "chromosome",
+gcols_vg <- c( "trait", "ensgid", "cs_id", "chromosome",
                "start", "end", "tss", "pops_score", "pops_rank", "abc_score",
                "abc_rank", "pchic_jung_score", "pchic_jung_rank", 
                "pchic_javierre_score", "pchic_javierre_rank", 
@@ -91,8 +79,10 @@ gcols_vg <- c( "trait", "gene", "ensgid", "region", "cs_id", "chromosome",
                "full_loco_netwas_score", "full_loco_netwas_bon_score",
                "no_loco_nc_netwas_score", "no_loco_nc_netwas_bon_score", 
                "no_loco_nc_depict_p", "full_loco_depict_p" )
-gcols_cnc <- c( "n_cs_snps", "cs_width", "ngenes_nearby" )
-m <- cbind( causal=cnc2$causal, vg2[ , ..gcols_vg ], cnc2[ , ..gcols_cnc ] )
+gcols_cnc <- c( "causal", "trait", "gene", "ensgid", "region", "cs_id", 
+                "n_cs_snps", "cs_width", "ngenes_nearby", "ensgid_c" )
+m <- left_join( x=cnc[ , ..gcols_cnc ],
+                y=vg[  , ..gcols_vg  ], by=c( "trait", "ensgid", "cs_id" ) )
 
 
 #-------------------------------------------------------------------------------
@@ -104,18 +94,22 @@ m$prior_n_genes_locus <- logit10( 1/m$ngenes_nearby )
 tcp_m <- paste( m$trait, m$region, m$cs_id, sep="_" )
 
 # POPS
-m$pops_glo <- m$pops_score
+m$pops_glo <- ifelse( is.na(m$pops_score), 
+                      median( m$pops_score, na.rm=TRUE ),
+                      m$pops_score )
 
 # Distance to gene body 
-m$dist_gene_raw_l2g <- log( m$distance_genebody + 1 )
-m$dist_gene_glo     <- -log10( m$distance_genebody + 1e3 )
+m$dist_gene_glo <- ifelse( is.na(m$distance_genebody),
+                           -log10( median( m$distance_genebody, na.rm=TRUE ) + 1e3 ),
+                           -log10( m$distance_genebody + 1e3 ) )
 
 # Distance to TSS
-m$dist_tss_raw_l2g  <- log( m$distance_tss + 1 )
-m$dist_tss_glo      <- -log10( m$distance_tss + 1e3 )
+m$dist_tss_glo <- ifelse( is.na(m$distance_tss),
+                          -log10( median( m$distance_tss, na.rm=TRUE ) + 1e3 ),
+                          -log10( m$distance_tss + 1e3 ))
 
 # TWAS
-m$twas_p <- ifelse( m$twas_p == 0, .Machine$double.xmin, m$twas_p )
+m$twas_p   <- ifelse( m$twas_p == 0, .Machine$double.xmin, m$twas_p )
 m$twas_glo <- ifelse( is.na(m$twas_z), 0, abs(m$twas_z) )
 
 # E-P correlation
@@ -174,7 +168,7 @@ m$netwas_bon_score_glo[ is.na(m$netwas_bon_score_glo) ] <- 0
 #-------------------------------------------------------------------------------
 
 # Set up global feature columns and TCPs
-glo_cols <- grep( "_glo$", x=names(m), value=T)
+glo_cols <- grep( "_glo$", x=names(m), value=TRUE )
 tcp_m    <- paste( m$trait, m$region, m$cs_id, sep="_" )
 
 # Loop through global columns

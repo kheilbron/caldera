@@ -28,6 +28,18 @@ aucpr.conf.int.expit <- function( estimate, num.pos, conf.level=0.95 ){
   return(ci)
 }
 
+# better_pr: Return best precision for a given recall value (and vice versa)
+better_pr <- function( p, r, t ){
+  df <- as.data.frame(prc$curve)
+  names(df) <- c( "recall", "precision", "threshold" )
+  idx_r <- max( which( df$recall    > r ) )
+  idx_p <- min( which( df$precision > p ) )
+  idx_t <- min( which( df$threshold > t ) )
+  df2 <- df[ c( idx_r, idx_p, idx_t ) , ]
+  row.names(df2) <- c( "same_recall", "same_precision", paste0( "threshold_", t ) )
+  df2
+}
+
 # ci95_lo and ci95_hi: Return the lower/upper 95% confidence interval
 ci95_lo <- function( beta, se, zcrit=qnorm(.025, lower.tail=FALSE) )  beta - zcrit * se
 ci95_hi <- function( beta, se, zcrit=qnorm(.025, lower.tail=FALSE) )  beta + zcrit * se
@@ -638,6 +650,11 @@ recalibrate_preds <- function( df, model, method,
     df$pred <- predict( object=model, newdata=df, type="response" )
   }
   
+  # GLMM
+  if( method == "glmm" ){
+    df$pred <- predict( object=model, newdata=df, type="response", re.form=NA )
+  }
+  
   # LASSO or ElNet: lambda.1se
   if( method %in% c( "lasso1", "elnet1" ) ){
     feat_cols <- model$glmnet$beta@Dimnames[[1]]
@@ -729,8 +746,17 @@ recalibration_model <- function(data){
   # Build the model to predict causal genes based on step 1 predictions
   data$foldid <- as.integer( as.factor(data$trait) )
   pred_cols <- c( "global", "relative" )
-  cv.glmnet( x=as.matrix( data[ , ..pred_cols ] ), 
-             y=data[["causal"]], family="binomial", foldid=data$foldid )
+  mod_las <- cv.glmnet( x=as.matrix( data[ , ..pred_cols ] ), 
+                        y=data[["causal"]], family="binomial", foldid=data$foldid )
+  
+  # Fit a GAM
+  mod_gam <- gam( causal ~ s(original), data=data )
+  
+  # Return
+  out <- list()
+  out$lasso <- mod_las
+  out$gam   <- mod_gam
+  return(out)
 }
 
 
@@ -746,13 +772,15 @@ loto <- function( data, method, feat_cols,
   data <- data[ order( data$trait, data$region, data$cs_id, data$start ) , ]
   
   # Initialize output
-  out <- list( trait    = unique(data$trait), 
-               model    = list(), 
-               preds    = data.table( trait      = data$trait,
-                                      causal     = data$causal,
-                                      pred       = NA,
-                                      recal = NA,
-                                      scaled     = NA ) )
+  out <- list( trait       = unique(data$trait), 
+               model       = list(), 
+               recal_model = list(), 
+               preds       = data.table( trait  = data$trait,
+                                         causal = data$causal,
+                                         pred   = NA,
+                                         recal  = NA,
+                                         local  = NA,
+                                         scaled = NA ) )
   
   # Loop through traits (to leave out)
   for( i in out$trait ){
@@ -802,6 +830,14 @@ loto <- function( data, method, feat_cols,
       }
     }
     
+    # GLMM
+    if( method == "glmm" ){
+      library(lme4)
+      l_form <- make_formula( lhs=feat_cols[1], rhs=feat_cols[-1] )
+      l_form <- update( l_form, . ~ . + ( 1 | ensgid_c ) )
+      l_mod  <- glmer( formula=l_form, data=trn, family="binomial" )
+    }
+    
     # LASSO
     if( method %in% c( "lasso1", "lasso2" ) ){
       l_mod <- cv.glmnet( x=as.matrix( trn[ , ..feat_cols ] )[,-1],
@@ -833,14 +869,24 @@ loto <- function( data, method, feat_cols,
     preds_te <- recalibrate_preds( df=tst, model=l_mod, method=method, 
                                    bias_cols=bias_cols )
     
-    # Train a LASSO model to recalibrate model outputs
+    # Train LASSO and GAM smodel to recalibrate model outputs
     cal_mod <- recalibration_model( data=preds_tr )
     
-    # Apply LASSO model to get recalibrated predictions
+    # Apply GAM model: training
+    preds_tr$gam <- predict( object=cal_mod$gam, newdata=preds_tr )
+    preds_tr$gam[ preds_tr$gam < 0.001 ] <- 0.001
+    preds_tr$gam[ preds_tr$gam > 0.999 ] <- 0.999
+    
+    # Apply GAM model: testing
+    preds_te$gam <- predict( object=cal_mod$gam, newdata=preds_te )
+    preds_te$gam[ preds_te$gam < 0.001 ] <- 0.001
+    preds_te$gam[ preds_te$gam > 0.999 ] <- 0.999
+    
+    # Apply LASSO model
     pred_cols <- c( "global", "relative" )
-    preds_tr$modeled <- predict( object=cal_mod, s="lambda.min", type="response",
+    preds_tr$modeled <- predict( object=cal_mod$lasso, s="lambda.min", type="response",
                                  newx=as.matrix( preds_tr[ , ..pred_cols ] ) )
-    preds_te$modeled <- predict( object=cal_mod, s="lambda.min", type="response",
+    preds_te$modeled <- predict( object=cal_mod$lasso, s="lambda.min", type="response",
                                  newx=as.matrix( preds_te[ , ..pred_cols ] ) )
     
     
@@ -848,14 +894,16 @@ loto <- function( data, method, feat_cols,
     #   Save outputs
     #---------------------------------------------------------------------------
     
-    # Model
-    out$model[[i]] <- l_mod
+    # Models
+    out$model[[i]]       <- l_mod
+    out$recal_model[[i]] <- cal_mod
     
     # Predicted probabilities
-    out$preds$pred[       out$preds$trait == i ] <- preds_te$original
-    out$preds$scaled[     out$preds$trait == i ] <- preds_te$scaled
-    out$preds$recal[ out$preds$trait == i ] <- preds_te$modeled
-    out$preds$bil[        out$preds$trait == i ] <- preds_te$best
+    out$preds$pred[   out$preds$trait == i ] <- preds_te$original
+    out$preds$scaled[ out$preds$trait == i ] <- preds_te$scaled
+    out$preds$recal[  out$preds$trait == i ] <- preds_te$gam
+    out$preds$local[  out$preds$trait == i ] <- preds_te$modeled
+    out$preds$bil[    out$preds$trait == i ] <- preds_te$best
   }
   
   # Return
@@ -953,6 +1001,58 @@ plot_logOR_relationship_smooth <- function( data, varname ){
 
 
 #-------------------------------------------------------------------------------
+#   plot_prob_relationship_smooth: Smoothed P(causal) v. a variable
+#-------------------------------------------------------------------------------
+
+plot_prob_relationship_smooth <- function( data, varname ){
+  
+  # Format data
+  data <- as.data.frame(data)
+  data <- data.frame( x=data[[varname]], y=data$causal )
+  
+  # Run model, get predictions
+  pmode <- max( table(data$x) ) / NROW(data)
+  if( pmode < 0.5 ){
+    model <- loess( y ~ x, data=data, span=0.2 )
+  }else{
+    span  <- (1 + pmode) / 2 
+    model <- loess( y ~ x, data=data, span=span )
+  }
+  xrange <- range( data$x )
+  xseq <- seq( from=xrange[1], to=xrange[2], length=100 )
+  pred <- predict( model, newdata=data.frame(x=xseq), se=TRUE )
+  
+  # Format fitted values
+  y    <- pred$fit
+  ci   <- pred$se.fit * qt( 0.95/2 + 0.5, pred$df )
+  ymin <- y - ci
+  ymax <- y + ci
+  loess.DF <- data.frame(x = xseq, y, ymin, ymax, se = pred$se.fit)
+  
+  # Restrict y values to 0 to 1
+  loess.DF$y[    loess.DF$y    > 1 ] <- 1
+  loess.DF$ymin[ loess.DF$ymin > 1 ] <- 1
+  loess.DF$ymax[ loess.DF$ymax > 1 ] <- 1
+  loess.DF$y[    loess.DF$y    < 0 ] <- 0
+  loess.DF$ymin[ loess.DF$ymin < 0 ] <- 0
+  loess.DF$ymax[ loess.DF$ymax < 0 ] <- 0
+  
+  # Plot
+  p1 <- ggplot( data, aes(x=x) ) +
+    geom_histogram() +
+    labs( x="", y="Count" ) +
+    ggtitle(varname)
+  p2 <- ggplot( loess.DF, aes( x=x, y=y) ) +
+    geom_abline( slope=1, intercept=0, lty=2, col="grey", lwd=1 ) +
+    geom_smooth( aes_auto(loess.DF), data=loess.DF, stat="identity", col="#70AD47" ) +
+    scale_y_continuous( breaks=seq( 0, 1, 0.1 ) ) +
+    labs( x="Model prediction", y="Truth" ) +
+    theme_bw()
+  p1 + p2 + plot_layout( nrow=2, heights=c(1,3) )
+}
+
+
+#-------------------------------------------------------------------------------
 #   plot_logOR_relationship_model:  Modeled P(causal) v. a variable
 #-------------------------------------------------------------------------------
 
@@ -965,7 +1065,6 @@ plot_logOR_relationship_model <- function( data, model, var_prefix,
   focal_cols <- grep( pattern=paste0( "^", var_prefix ), x=feat_cols, value=TRUE )
   g_focal    <- grep( pattern="_glo$", x=focal_cols, value=TRUE )
   r_focal    <- grep( pattern="_rel$", x=focal_cols, value=TRUE )
-  b_focal    <- grep( pattern="_bil$", x=focal_cols, value=TRUE )
   
   # Format data
   xycols <- c( "causal", feat_cols )
@@ -982,7 +1081,7 @@ plot_logOR_relationship_model <- function( data, model, var_prefix,
   # Set all relative and BIL features to their maximum from the training dataset
   feat_means <- apply( data[,-1], 2, mean )
   feat_maxs  <- apply( data[,-1], 2, max )
-  feat_mixs  <- ifelse( grepl( pattern="_rel$|_bil$", x=names(feat_means) ),
+  feat_mixs  <- ifelse( grepl( pattern="_rel$", x=names(feat_means) ),
                         feat_maxs, feat_means )
   mat <- matrix( rep( feat_mixs, n ), 
                  nrow=n, ncol=length(feat_mixs), byrow=TRUE )
@@ -993,7 +1092,6 @@ plot_logOR_relationship_model <- function( data, model, var_prefix,
   # And the focal BIL feature, which is set to 0
   # And the focal relative feature, which is set to its mean
   nx0[[g_focal]] <- xseq
-  nx0[[b_focal]] <- 0
   nx0[[r_focal]] <- feat_means[r_focal]
   nx0$Relative   <- "Mean"
   
@@ -1001,7 +1099,6 @@ plot_logOR_relationship_model <- function( data, model, var_prefix,
   # ...best value and the focal BIL feature to 1, rbind
   nx1 <- nx0
   nx1[[r_focal]] <- feat_maxs[r_focal]
-  nx1[[b_focal]] <- 1
   nx1$Relative <- "Best"
   nx <- rbind( nx0, nx1)
   
@@ -1073,6 +1170,7 @@ suppressPackageStartupMessages( library(glmnet) )
 suppressPackageStartupMessages( library(ggrepel) )
 suppressPackageStartupMessages( library(gridExtra) )
 suppressPackageStartupMessages( library(lme4) )
+suppressPackageStartupMessages( library(mgcv) )
 suppressPackageStartupMessages( library(mlr) )
 suppressPackageStartupMessages( library(PRROC) )
 suppressPackageStartupMessages( library(parallel) )
@@ -1155,11 +1253,10 @@ rel_cols <- c( "causal", "pops_rel", "dist_gene_rel", "dist_tss_rel",
                "depict_z_rel", "netwas_score_rel", "netwas_bon_score_rel" )
 
 # Features that may capture bias in how causal genes were selected
-bias_cols <- c( "pLI_log10",     "pLI_lt_0.1",   "pLI_lt_0.9",
-                "LOEUF",         "hs_log10",
+bias_cols <- c( "pLI_log10",     "pLI_lt_0.1",   "pLI_lt_0.9", "hs_log10",
+                # "LOEUF",         "pritchard_miss",   
                 "gene_bp_log10", "cds_bp_log10",
-                "abc_bp_log10",  "roadmap_bp_log10",
-                "pritchard_miss" )
+                "abc_bp_log10",  "roadmap_bp_log10" )
 
 # Gene-level features
 # glc_cols  <- c( "ABC_count",         "Roadmap_count",
@@ -1256,8 +1353,10 @@ b_las <- cv.glmnet( x=as.matrix( tr[ , ..b_cols ] )[,-1],
 corrplot( cor( tr[ , ..bg_cols ][,-1] ), order="hclust" )
 
 # Run LOTO
-bgl_las <- loto( data=tr, method="lasso2", feat_cols=bg_cols, bias_cols=bias_cols )
-bgl_xgb <- bl_xgb
+bgl_las  <- loto( data=tr, method="lasso2", feat_cols=bg_cols, bias_cols=bias_cols )
+bgl_glm  <- loto( data=tr, method="glm",    feat_cols=bg_cols, bias_cols=bias_cols )
+bgl_glmm <- loto( data=tr, method="glmm",   feat_cols=bg_cols, bias_cols=bias_cols )
+bgl_xgb  <- bl_xgb
 
 
 #-------------------------------------------------------------------------------
@@ -1280,6 +1379,26 @@ cbind( coef( bg_las, s="lambda.min" ),
        coef( bg_las, s="lambda.1se" ),
        0:bg_las$glmnet.fit$beta@Dim[1] )
 
+# GLM
+form1 <- make_formula( lhs=bg_cols[1], rhs=bg_cols[-1] )
+bg_glm <- glm( formula=form1, data=tr, family="binomial" )
+
+# GLMM
+form2 <- update( form1, . ~ . + ( 1 | ensgid_c ) )
+bg_glmm <- glmer( formula=form2, data=tr, family="binomial" )
+
+# Compare GLM and GLMM: logOR
+plot( summary(bg_glm)$coef[ -1, 1 ], 
+      summary(bg_glmm)$coef[ -1, 1 ], 
+      las=1, xlab="GLM", ylab="GLMM", col="steelblue", cex=1.5, lwd=2 )
+abline( a=0, b=1, lty=2 )
+
+# Compare GLM and GLMM: SE
+plot( summary(bg_glm)$coef[ -1, 2 ], 
+      summary(bg_glmm)$coef[ -1, 2 ], 
+      las=1, xlab="GLM", ylab="GLMM", col="steelblue", cex=1.5, lwd=2 )
+abline( a=0, b=1, lty=2 )
+
 
 #-------------------------------------------------------------------------------
 #   Train and save a recalibration model
@@ -1294,6 +1413,7 @@ recal_preds$recal <- predict( object=recal_mod, s="lambda.min", type="response",
                                 recal_preds[ , c( "global", "relative" ) ] ) )
 
 # Save the LASSO1 model and the calibration model
+# saveRDS( object=bgl_las,   file=file.path( maindir, "bgl_las.rds" ) )
 # saveRDS( object=bg_las,    file=file.path( maindir, "bg_las.rds" ) )
 # saveRDS( object=recal_mod, file=file.path( maindir, "bg_las_recal_mod.rds" ) )
 
@@ -1318,16 +1438,22 @@ c( auprc=prc$auc.integral, ci )
 #-------------------------------------------------------------------------------
 
 # Extract AUPRC and 95% CI for all models
-fl_las_pr   <- plot_loto_pr( loto_obj=fl_las,  color=viridis(11), legend=TRUE )
-fl_xgb_pr   <- plot_loto_pr( loto_obj=fl_xgb,  color=viridis(11), legend=TRUE )
-bl_las_pr   <- plot_loto_pr( loto_obj=bl_las,  color=viridis(11), legend=TRUE )
-bl_xgb_pr   <- plot_loto_pr( loto_obj=bl_xgb,  color=viridis(11), legend=TRUE )
-bgl_las_pr  <- plot_loto_pr( loto_obj=bgl_las, color=viridis(11), legend=TRUE )
-bgl_xgb_pr  <- plot_loto_pr( loto_obj=bgl_xgb, color=viridis(11), legend=TRUE )
-bgl_lasc_pr <- plot_loto_pr( loto_obj=bgl_las, color=viridis(11), legend=TRUE, 
+fl_las_pr    <- plot_loto_pr( loto_obj=fl_las,   color=viridis(11), legend=TRUE )
+bl_las_pr    <- plot_loto_pr( loto_obj=bl_las,   color=viridis(11), legend=TRUE )
+bgl_las_pr   <- plot_loto_pr( loto_obj=bgl_las,  color=viridis(11), legend=TRUE )
+bgl_lasc_pr  <- plot_loto_pr( loto_obj=bgl_las,  color=viridis(11), legend=TRUE, 
                              type="recalibrated" )
-bgl_xgbc_pr <- plot_loto_pr( loto_obj=bgl_xgb, color=viridis(11), legend=TRUE,
+fl_xgb_pr    <- plot_loto_pr( loto_obj=fl_xgb,   color=viridis(11), legend=TRUE )
+bl_xgb_pr    <- plot_loto_pr( loto_obj=bl_xgb,   color=viridis(11), legend=TRUE )
+bgl_xgb_pr   <- plot_loto_pr( loto_obj=bgl_xgb,  color=viridis(11), legend=TRUE )
+bgl_xgbc_pr  <- plot_loto_pr( loto_obj=bgl_xgb,  color=viridis(11), legend=TRUE,
                              type="recalibrated" )
+bgl_glm_pr   <- plot_loto_pr( loto_obj=bgl_glm,  color=viridis(11), legend=TRUE )
+bgl_glmm_pr  <- plot_loto_pr( loto_obj=bgl_glmm, color=viridis(11), legend=TRUE )
+bgl_glmc_pr  <- plot_loto_pr( loto_obj=bgl_glm,  color=viridis(11), legend=TRUE,
+                              type="recalibrated" )
+bgl_glmmc_pr <- plot_loto_pr( loto_obj=bgl_glmm, color=viridis(11), legend=TRUE,
+                              type="recalibrated" )
 
 # Figure 1: set up
 fig_dir   <- file.path( maindir, "figures" )
@@ -1428,14 +1554,58 @@ grid.arrange( p1, p2, ncol=2 )
 dev.off()
 
 # Scaled (for comparison)
-cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=scaled, 
+p3 <- cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=scaled, 
                    conf_level=0.95 ) +
   ggtitle("Locally-scaled predictions")
+grid.arrange( p2, p3, ncol=2 )
+
+# Modeled (for comparison)
+p4 <- cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=local, 
+                   conf_level=0.95 ) +
+  ggtitle("Locally-modelled predictions")
+grid.arrange( p2, p4, ncol=2 )
 
 # How do predictions differ before/after calibration?
-# Plot predicted P(causal) with and without GLCs
-plot( bgl_las$preds$pred, bgl_las$preds$recal )
-abline( a=0, b=1 )
+plot( bgl_las$preds$pred, bgl_las$preds$recal, las=1, col="steelblue", lwd=1.5,
+      xlab="Original", ylab="Recalibrated" )
+abline( a=0, b=1, lty=2, lwd=2 )
+
+# How do predictions differ before/after adding GLCs?
+plot( bl_las$preds$pred, bgl_las$preds$pred, las=1, col="steelblue", lwd=1.5,
+      xlab="Without GLCs", ylab="With GLCs" )
+abline( a=0, b=1, lty=1, lwd=2 )
+lines( lowess( bl_las$preds$pred, bgl_las$preds$pred, f=0.05 ), lty=2, lwd=2 )
+
+# LOESS
+plot_prob_relationship_smooth( data=bgl_las$preds, varname="pred" )
+plot_prob_relationship_smooth( data=bgl_las$preds, varname="recal" )
+plot_prob_relationship_smooth( data=bgl_las$preds, varname="local" )
+plot_prob_relationship_smooth( data=bgl_las$preds, varname="scaled" )
+
+# How do predictions compare for LASSO and XGBoost?
+plot( bgl_las$preds$recal, bgl_xgb$preds$recal, las=1, col="steelblue", lwd=1.5,
+      xlab="LASSO", ylab="XGBoost" )
+abline( a=0, b=1, lty=2, lwd=2 )
+summary(  abs( bgl_las$preds$recal - bgl_xgb$preds$recal ) )
+quantile( abs( bgl_las$preds$recal - bgl_xgb$preds$recal ), 
+          probs=seq( 0.9, 1, 0.01 ) )
+
+# How do predictions compare for LASSO and GLMM?
+plot( bgl_las$preds$recal, bgl_glmm$preds$recal, las=1, col="steelblue", lwd=1.5,
+      xlab="LASSO", ylab="GLMM" )
+abline( a=0, b=1, lty=2, lwd=2 )
+summary(  abs( bgl_las$preds$recal - bgl_glmm$preds$recal ) )
+quantile( abs( bgl_las$preds$recal - bgl_glmm$preds$recal ), 
+          probs=seq( 0.9, 1, 0.01 ) )
+
+# How do predictions compare for GLM and GLMM?
+plot( bgl_glm$preds$recal, bgl_glmm$preds$recal, las=1, col="steelblue", lwd=1.5,
+      xlab="GLM", ylab="GLMM" )
+abline( a=0, b=1, lty=2, lwd=2 )
+summary(  abs( bgl_glm$preds$recal - bgl_glmm$preds$recal ) )
+quantile( abs( bgl_glm$preds$recal - bgl_glmm$preds$recal ), 
+          probs=seq( 0.9, 1, 0.01 ) )
+
 
 
 #-------------------------------------------------------------------------------
@@ -1465,9 +1635,10 @@ cal_pr$col <- brewer.pal( n=NROW(cal_pr), name="Greens" )
 
 # Plot
 plot_loto_pr(bgl_las, type="recalibrated" )
-points( x=cal_pr$recall, y=cal_pr$precision, pch=19, cex=1.5, col=cal_pr$col )
+# points( x=cal_pr$recall, y=cal_pr$precision, pch=19, cex=1.5, col=cal_pr$col )
 points( x=pnn_r,         y=pnn_p,            pch=19, cex=1.5, 
         col=brewer.pal( n=4, name="Blues" )[3] )
+better_pr( p=pnn_p, r=pnn_r, t=0.75 )
 
 
 #-------------------------------------------------------------------------------
@@ -1486,8 +1657,9 @@ p_tol <- cbind( bl_las$preds[ , c( 1:3, 6 ) ],
                 pLI_lt_0.1=tr$pLI_lt_0.1, pLI_lt_0.9=tr$pLI_lt_0.9, pLI=tr$pLI )
 
 # Plot predicted P(causal) with and without GLCs
-plot( p_tol$pred, p_tol$glc.pred )
-abline( a=0, b=1 )
+plot( p_tol$pred, p_tol$glc.pred, las=1, col="steelblue", lwd=1.5,
+      xlab="Without covariates", ylab="With covariates"  )
+abline( a=0, b=1, lty=2, lwd=2 )
 
 # Example for manuscript: most extreme decrease in P(causal) after adding GLCs
 summary(  abs( p_tol$pred - p_tol$glc.pred ) )
@@ -1901,12 +2073,10 @@ glm_to_forest_p( mod=a_glm, suffix="_bilTRUE" )
 plot_logOR_relationship_smooth( data=tr, varname="distance_genebody" )
 plot_logOR_relationship_smooth( data=tr[ tr$distance_genebody > 0 ], 
                                 varname="distance_genebody" )
-plot_logOR_relationship_smooth( data=tr, varname="dist_gene_raw_l2g" )
 plot_logOR_relationship_smooth( data=tr, varname="dist_gene_glo" )
 
 # Plot relationship: distance to TSS
 plot_logOR_relationship_smooth( data=tr, varname="distance_tss" )
-plot_logOR_relationship_smooth( data=tr, varname="dist_tss_raw_l2g" )
 plot_logOR_relationship_smooth( data=tr, varname="dist_tss_glo" )
 
 # Plot relationship: POPS
@@ -1917,10 +2087,10 @@ plot_logOR_relationship_smooth( data=tr, varname="twas_logp_glo" )
 plot_logOR_relationship_smooth( data=tr, varname="twas_glo" )
 
 # Plot relationship: E-P Liu
-plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_raw_l2g > 0 , ], 
+plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_raw_l2g > min(tr$corr_liu_raw_l2g) , ], 
                                 varname="corr_liu_raw_l2g" )
 plot_logOR_relationship_smooth( data=tr, varname="corr_liu_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_glo > 0 , ], 
+plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_glo > min(tr$corr_liu_glo) , ], 
                                 varname="corr_liu_glo" )
 plot_logOR_relationship_smooth( data=tr, varname="corr_liu_glo" )
 
@@ -1948,7 +2118,7 @@ plot_logOR_relationship_smooth( data=tr, varname="pchic_jav_glo" )
 plot_logOR_relationship_smooth( data=tr[ tr$clpp_raw_l2g > 0 , ], 
                                 varname="clpp_raw_l2g" )
 plot_logOR_relationship_smooth( data=tr, varname="clpp_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr[ tr$clpp_glo > log10(0.0001) , ], 
+plot_logOR_relationship_smooth( data=tr[ tr$clpp_glo > min(tr$clpp_glo) , ], 
                                 varname="clpp_glo" )
 plot_logOR_relationship_smooth( data=tr, varname="clpp_glo" )
 
@@ -1989,24 +2159,18 @@ plot_logOR_relationship_smooth( data=tr, varname="netwas_bon_score_glo" )
 
 # Distance to gene body
 mod1 <- glm( causal ~ distance_genebody, data=tr, family="binomial" )
-mod2 <- glm( causal ~ dist_gene_raw_l2g, data=tr, family="binomial" )
 mod3 <- glm( causal ~ dist_gene_glo, data=tr, family="binomial" )
 dev_exp(mod1)
-dev_exp(mod2)
 dev_exp(mod3)
 summary(mod1)$coef
-summary(mod2)$coef
 summary(mod3)$coef
 
 # Distance to TSS
 mod1 <- glm( causal ~ distance_tss,     data=tr, family="binomial" )
-mod2 <- glm( causal ~ dist_tss_raw_l2g, data=tr, family="binomial" )
 mod3 <- glm( causal ~ dist_tss_glo, data=tr, family="binomial" )
 dev_exp(mod1)
-dev_exp(mod2)
 dev_exp(mod3)
 summary(mod1)$coef
-summary(mod2)$coef
 summary(mod3)$coef
 
 # Number of genes in the locus
@@ -2522,6 +2686,46 @@ hist( hyp[[4]], col="steelblue", breaks=10, main=par_names[4], las=1, xlim=c( 0,
 hist( hyp[[5]], col="steelblue", breaks=10, main=par_names[5], las=1, xlim=c( 0, 6 ) )
 hist( hyp[[6]], col="steelblue", breaks=10, main=par_names[6], las=1, xlim=c( 0.3, 1 ) )
 hist( hyp[[7]], col="steelblue", breaks=10, main=par_names[7], las=1, xlim=c( 0.1, 1 ) )
+
+
+#-------------------------------------------------------------------------------
+#   Distribution of causal gene distances
+#-------------------------------------------------------------------------------
+
+# Load libraries
+library(fitdistrplus)
+library(logspline)
+
+# Which distributions is this likely to fit?
+adj_factor <- 0
+tssc <- log10( tr$distance_tss[ tr$causal] + adj_factor )
+descdist( data=tssc, discrete=FALSE )
+
+# Find parameters that best fit the data (and compare fit AICs): eQTL TSS
+fit_w <- fitdist( data=tssc, distr="weibull" )
+fit_g <- fitdist( data=tssc, distr="gamma" )
+fit_w$aic; fit_g$aic
+
+# Inspect: eQTL TSS
+plot(fit_w)
+x <- seq( 0, max(tssc), length=100 )
+plot( density(tssc) )
+lines( x=x, y=dweibull( x=x, shape=fit_w$estimate["shape"], 
+                        scale=fit_w$estimate["scale"] ), col="tomato2" )
+
+# Our data
+# What is the relative density of the fitted Weibull distribution?
+r_dens <- dweibull( x     = log10( seq( 1e5, 5e5, 1e5 ) + adj_factor ), 
+                    shape = fit_w$estimate["shape"], 
+                    scale = fit_w$estimate["scale"] )
+r_dens[1] / r_dens
+
+# Fauman and Hyde 2022 analysis of eQTLGen
+# What is the relative density of the fitted Weibull distribution?
+r_dens <- dweibull( x     = log10( seq( 1e5, 5e5, 1e5 ) + adj_factor ), 
+                    shape = 7.375, 
+                    scale = 4.7 )
+r_dens[1] / r_dens
 
 
 #-------------------------------------------------------------------------------
