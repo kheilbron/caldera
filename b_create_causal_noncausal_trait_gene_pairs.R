@@ -131,7 +131,7 @@ for( i in seq_along(tcp_n2) ){
     tgp_c$chromosome == chr &
     tgp_c$start <= cs_end   + window &
     tgp_c$end   >= cs_start - window &
-    cs_end - cs_start < 4e5
+    cs_end - cs_start < 1e6 - 2*window
   
   # If a non-coding TCP is near a single coding TGP, store TCP information
   if( sum(idx) == 1 ){
