@@ -147,9 +147,10 @@ m$smr_glo <- ifelse( is.na(m$smr_p),
                      -log10(m$smr_p) )
 
 # Coding
-m$coding_glo <- ifelse( is.na(m$coding_prob), 
-                        logit10( min( m$coding_prob, na.rm=TRUE ) ), 
-                        logit10(m$coding_prob) )
+# m$coding_glo <- ifelse( is.na(m$coding_prob),
+#                         logit10( min( m$coding_prob, na.rm=TRUE ) ),
+#                         logit10(m$coding_prob) )
+m$coding_glo <- ifelse( is.na(m$coding_prob), 0, m$coding_prob )
 m$coding     <- ifelse( is.na(m$coding_prob), 0, 1 )
 
 # DEPICT
@@ -208,13 +209,6 @@ for( j in glo_cols ){
 #-------------------------------------------------------------------------------
 #   Add some final V2G columns
 #-------------------------------------------------------------------------------
-
-# Add BIL
-rel_cols <- grep( pattern="_rel$", x=names(m), value=TRUE )
-for( i in rel_cols ){
-  bil_col <- sub( pattern="_rel$", replacement="_bil", x=i )
-  m[[bil_col]] <- m[[i]] == 0
-}
 
 # Add columns for any V2G across E-P correlations
 # And again for PC-HiC
