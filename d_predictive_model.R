@@ -72,14 +72,13 @@ dev_exp <- function( model, in_sample=TRUE ){
   return(de)
 }
 
-# logistic10: Convert a log10 odds ratio into a probability 
+# logistic(10): Convert a log(10)OR into a probability
+logistic   <- function(x) ( 1 / ( 1 + exp(-x) ) )
 logistic10 <- function(x) ( 1 / ( 1 + 10^-x ) )
 
-# logit10: Convert a probability into a log10 odds ratio
+# logit(10): Convert a probability into a log or log10 odds ratio
+logit   <- function(p) log( p / (1-p) )
 logit10 <- function(p) log10( p / (1-p) )
-
-# logistic: Convert a logOR into a probability
-logistic <- function(x) ( 1 / ( 1 + exp(-x) ) )
 
 # make_formula: Constructs a formula for use in regression
 make_formula <- function(lhs, rhs, formula.or.character="formula"){
@@ -733,7 +732,8 @@ recalibrate_preds <- function( df, model, method,
   # Initialize output
   out <- data.table( trait=df[["trait"]], causal=df[["causal"]], 
                      original=as.vector(df$pred) )
-  out$scaled <- out$best <- out$relative <- out$global <- as.numeric(NA)
+  out$global <- logit(out$original)
+  out$scaled <- out$best <- out$relative <- as.numeric(NA)
   
   # Loop through test set loci
   df$tcp <- paste( df$trait, df$region, df$cs_id, sep="_" )
@@ -741,27 +741,20 @@ recalibrate_preds <- function( df, model, method,
     
     # Subset to locus
     sub <- df[ df$tcp == i , ]
-    idx <- order( -sub[["pred"]] )
     
     # Re-calibrate: scaled
     scaled <- sub[["pred"]] / sum( sub[["pred"]] )
     
     # Make variables for global, relative, and BIL scores
-    glo <- log( prop_to_odds( sub[["pred"]] ) )
-    rel <- glo - max(glo)
-    bil <- ifelse( glo == max(glo), 1, 0 )
+    glo  <- logit( sub[["pred"]] )
+    rel  <- glo - max(glo)
+    bil  <- ifelse( glo == max(glo), 1, 0 )
     
     # Assign values: scaled
     set( x     = out, 
          i     = which( df$tcp == i ), 
          j     = "scaled", 
          value = scaled )
-    
-    # Assign values: global score
-    set( x     = out, 
-         i     = which( df$tcp == i ), 
-         j     = "global", 
-         value = glo )
     
     # Assign values: relative score
     set( x     = out, 
@@ -796,8 +789,8 @@ recalibration_model <- function(data){
   mod_las <- cv.glmnet( x=as.matrix( data[ , ..pred_cols ] ), 
                         y=data[["causal"]], family="binomial", foldid=data$foldid )
   
-  # Fit a GAM
-  mod_gam <- gam( causal ~ s(original), data=data )
+  # Fit GAMs
+  mod_gam  <- gam( causal ~ s(original),               data=data )
   
   # Return
   out <- list()
@@ -826,7 +819,7 @@ loto <- function( data, method, feat_cols,
                                          causal = data$causal,
                                          pred   = NA,
                                          recal  = NA,
-                                         local  = NA,
+                                         gam    = NA,
                                          scaled = NA ) )
   
   # Loop through traits (to leave out)
@@ -919,21 +912,14 @@ loto <- function( data, method, feat_cols,
     # Train LASSO and GAM models to recalibrate model outputs
     cal_mod <- recalibration_model( data=preds_tr )
     
-    # Apply GAM model: training
-    preds_tr$gam <- predict( object=cal_mod$gam, newdata=preds_tr )
-    preds_tr$gam[ preds_tr$gam < 0.001 ] <- 0.001
-    preds_tr$gam[ preds_tr$gam > 0.999 ] <- 0.999
-    
-    # Apply GAM model: testing
+    # Apply GAM model
     preds_te$gam <- predict( object=cal_mod$gam, newdata=preds_te )
     preds_te$gam[ preds_te$gam < 0.001 ] <- 0.001
     preds_te$gam[ preds_te$gam > 0.999 ] <- 0.999
     
     # Apply LASSO model
     pred_cols <- c( "global", "relative" )
-    preds_tr$modeled <- predict( object=cal_mod$lasso, s="lambda.min", type="response",
-                                 newx=as.matrix( preds_tr[ , ..pred_cols ] ) )
-    preds_te$modeled <- predict( object=cal_mod$lasso, s="lambda.min", type="response",
+    preds_te$recal <- predict( object=cal_mod$lasso, s="lambda.min", type="response",
                                  newx=as.matrix( preds_te[ , ..pred_cols ] ) )
     
     
@@ -948,8 +934,8 @@ loto <- function( data, method, feat_cols,
     # Predicted probabilities
     out$preds$pred[   out$preds$trait == i ] <- preds_te$original
     out$preds$scaled[ out$preds$trait == i ] <- preds_te$scaled
-    out$preds$recal[  out$preds$trait == i ] <- preds_te$gam
-    out$preds$local[  out$preds$trait == i ] <- preds_te$modeled
+    out$preds$recal[  out$preds$trait == i ] <- preds_te$recal
+    out$preds$gam[    out$preds$trait == i ] <- preds_te$gam
     out$preds$bil[    out$preds$trait == i ] <- preds_te$best
   }
   
@@ -972,12 +958,16 @@ plot_loto_pr <- function( loto_obj, type="original", show_plot=TRUE,
                      curve = TRUE )
   }else if( type == "recalibrated" ){
     prc <- pr.curve( scores.class0 = loto_obj$preds$recal[  loto_obj$preds$causal ], 
-                       scores.class1 = loto_obj$preds$recal[ !loto_obj$preds$causal ], 
-                       curve = TRUE )
+                     scores.class1 = loto_obj$preds$recal[ !loto_obj$preds$causal ], 
+                     curve = TRUE )
+  }else if( type == "gam" ){
+    prc <- pr.curve( scores.class0 = loto_obj$preds$gam[  loto_obj$preds$causal ], 
+                     scores.class1 = loto_obj$preds$gam[ !loto_obj$preds$causal ], 
+                     curve = TRUE )
   }else if( type == "scaled" ){
     prc <- pr.curve( scores.class0 = loto_obj$preds$scaled[  loto_obj$preds$causal ], 
-                       scores.class1 = loto_obj$preds$scaled[ !loto_obj$preds$causal ], 
-                       curve = TRUE )
+                     scores.class1 = loto_obj$preds$scaled[ !loto_obj$preds$causal ], 
+                     curve = TRUE )
   }
   
   # Plot
@@ -1102,7 +1092,7 @@ plot_prob_relationship_smooth <- function( data, varname ){
 #-------------------------------------------------------------------------------
 
 plot_logOR_relationship_model <- function( data, model, var_prefix, 
-                                           qmin=0.1, qmax=0.9, 
+                                           qmin=0.1, qmax=0.9, bins=30,
                                            g_trans_fun=NULL ){
   
   # Extract features from the model
@@ -1175,10 +1165,13 @@ plot_logOR_relationship_model <- function( data, model, var_prefix,
   
   # Plot
   p1 <- ggplot( hdf, aes(x=x) ) +
-    geom_histogram() +
+    geom_histogram(bins=bins) +
     labs( y="Count", x="" ) +
     theme_bw() + 
     ggtitle(clean_label)
+  if( var_prefix == "coding" ){
+    p1 <- p1 + coord_cartesian( ylim=c(0,20) )
+  }
   p2 <- ggplot( df, aes( x=x, y=y, color=Relative ) ) +
     geom_line( aes( y=y ), linewidth=1 ) + 
     scale_y_continuous( trans="logit",
@@ -1198,7 +1191,7 @@ plot_logOR_relationship_model <- function( data, model, var_prefix,
 #                       either the Open Targets or the ExWAS benchmarking set
 #-------------------------------------------------------------------------------
 
-benchmarking_auprc <- function(l2g_or_exwas){
+benchmarking_auprc <- function( l2g_or_exwas, type="recalibrated" ){
   
   #-------------------------------------------------------------------------------
   #   Read in data
@@ -1210,8 +1203,19 @@ benchmarking_auprc <- function(l2g_or_exwas){
   maindir <- "~/projects/causal_genes/"
   
   # Read in CALDERA and recalibration models
-  bg_las    <- readRDS( file=file.path( maindir, "bg_las.rds" ) )
-  recal_mod <- readRDS( file=file.path( maindir, "bg_las_recal_mod.rds" ) )
+  if( l2g_or_exwas == "l2g" ){
+    bg_las    <- readRDS( file=file.path( maindir, "bg_las.rds" ) )
+    recal_mod <- readRDS( file=file.path( maindir, "bg_las_recal_mod.rds" ) )
+    cov_means <- readRDS( file=file.path( maindir, "cov_means.rds" ) )
+    
+  }else if( l2g_or_exwas == "exwas" ){
+    bg_las    <- readRDS( file=file.path( maindir, "bg_las_ex.rds" ) )
+    recal_mod <- readRDS( file=file.path( maindir, "bg_las_recal_mod_ex.rds" ) )
+    cov_means <- readRDS( file=file.path( maindir, "cov_means_ex.rds" ) )
+    
+  }else{
+    stop( "l2g_or_exwas must be either 'l2g' or 'exwas'" )
+  }
   
   # Read in L2G benchmarking dataset
   if( l2g_or_exwas == "l2g" ){
@@ -1231,9 +1235,8 @@ benchmarking_auprc <- function(l2g_or_exwas){
   names(lg)[ names(lg) == "TP" ]                <- "causal"
   
   # Read in mean bias column values, merge
-  mean_bias <- readRDS( file=file.path( maindir, "mean_bias.rds" ) )
-  for( i in names(mean_bias) ){
-    lg[[i]] <- mean_bias[i]
+  for( i in names(cov_means) ){
+    lg[[i]] <- cov_means[i]
   }
   
   
@@ -1249,8 +1252,8 @@ benchmarking_auprc <- function(l2g_or_exwas){
                           lg2$PoPS_Score )
   lg2$dist_gene_glo <- -log10( lg2$distance + 1e3 )
   lg2$coding_glo <- ifelse( lg2$VEP_sum == 0, 0, 
-                            # lg2$VEP_sum )
-                            0 )
+                            lg2$VEP_sum )
+                            # 0 )
   
   # Make a column for number of local genes
   n_genes <- tapply( X=lg2$distance, INDEX=lg2$CS_ID, FUN=function(x) sum( x < 3e5 ) )
@@ -1309,39 +1312,72 @@ benchmarking_auprc <- function(l2g_or_exwas){
   lg2$original <- predict( bg_las, newx=as.matrix( lg2[ , ..feat_cols ] ), 
                            s="lambda.min", type="response" )
   
+  # Make features needed for recalibration
+  lg2$global   <- logit(lg2$original)
+  lg2$relative <- as.numeric(NA)
+  for( i in unique(lg2$CS_ID) ){
+    
+    # Subset, make relative features
+    sub  <- lg2[ lg2$CS_ID == i , ]
+    rel  <- sub$global   - max(sub$global)
+    
+    # Set: relative (logit scale)
+    set( x     = lg2, 
+         i     = which( lg2$CS_ID == i ), 
+         j     = "relative", 
+         value = rel )
+  }
+  
   # Recalibrate
-  lg2$recal <- predict( object=recal_mod$gam, newdata=lg2 )
-  lg2$recal[ lg2$recal < 0.001 ] <- 0.001
-  lg2$recal[ lg2$recal > 0.999 ] <- 0.999
+  feat_cols <- recal_mod$lasso$glmnet$beta@Dimnames[[1]]
+  lg2$recal <- predict( recal_mod$lasso, newx=as.matrix( lg2[ , ..feat_cols ] ), 
+                        s="lambda.min", type="response" )
+  lg2$gam   <- predict( object=recal_mod$gam, newdata=lg2 )
+  
+  # For recalibrated values on the probability scale, ensure range between 0 and 1
+  lg2$gam[  lg2$gam  < 0.001 ] <- 0.001
+  lg2$gam[  lg2$gam  > 0.999 ] <- 0.999
   
   
   #-------------------------------------------------------------------------------
-  #   Extract AUPRCs
+  #   Extract AUPRCs, make plots, return
   #-------------------------------------------------------------------------------
+  
+  # Set the type of prediction to be used
+  if( type == "recalibrated" )  pred_col <- "recal"
+  if( type == "gam" )           pred_col <- "gam"
+  if( type == "uncalibrated" )  pred_col <- "original"
   
   # Remove trait-gene pairs that are missing L2G information
   lg3 <- lg2[ !is.na(lg2$L2G) , ]
-  cal_pr <- plot_mod_pr( pred_col="recal", data=lg3 )
+  cal_pr <- plot_mod_pr( pred_col=pred_col, data=lg3 )
   l2g_pr <- plot_mod_pr( pred_col="L2G",   data=lg3 )
   b_pr <- rbind( cal_pr, l2g_pr )
   dimnames(b_pr)[[1]] <- c( "CALDERA", "L2G" )
   
-  # Plots: CALDERA
-  p1 <- cal_plot_logistic( .data=lg3, truth=causal, 
-                           estimate=recal, conf_level=0.95 ) +
-    ggtitle( paste0( bench, " dataset, CALDERA" ) ) +
-    xlab("Predicted probability") + 
-    ylab("Ground truth probability")
-  
   # Plots: L2G
-  p2 <- cal_plot_logistic( .data=lg3, truth=causal, 
-                           estimate=L2G, conf_level=0.95 ) +
+  p1 <- cal_plot_logistic( .data=lg3, truth=causal, estimate=L2G, 
+                           include_rug=FALSE, conf_level=0.95 ) +
     ggtitle( paste0( bench, " dataset, L2G" ) ) +
     xlab("Predicted probability") + 
     ylab("Ground truth probability")
   
+  # Plots: CALDERA
+  p2 <- cal_plot_logistic( .data=lg3, truth=causal, estimate=recal, 
+                           include_rug=FALSE, conf_level=0.95 ) +
+    ggtitle( paste0( bench, " dataset, CALDERA" ) ) +
+    xlab("Predicted probability") + 
+    ylab("Ground truth probability")
+  
+  # Plots: GAM
+  p3 <- cal_plot_logistic( .data=lg3, truth=causal, estimate=gam, 
+                           include_rug=FALSE, conf_level=0.95 ) +
+    ggtitle( paste0( bench, " dataset, CALDERA (GAM)" ) ) +
+    xlab("Predicted probability") + 
+    ylab("Ground truth probability")
+  
   # Return
-  out <- list( pr=b_pr, p1=p1, p2=p2 )
+  out <- list( pr=b_pr, p1=p1, p2=p2, p3=p3 )
   return(out)
 }
 
@@ -1368,6 +1404,7 @@ suppressPackageStartupMessages( library(glmnet) )
 suppressPackageStartupMessages( library(ggrepel) )
 suppressPackageStartupMessages( library(gridExtra) )
 suppressPackageStartupMessages( library(lme4) )
+suppressPackageStartupMessages( library(metafor) )
 suppressPackageStartupMessages( library(mgcv) )
 suppressPackageStartupMessages( library(mlr) )
 suppressPackageStartupMessages( library(PRROC) )
@@ -1552,8 +1589,6 @@ corrplot( cor( tr[ , ..bg_cols ][,-1] ), order="hclust" )
 
 # Run LOTO
 bgl_las  <- loto( data=tr, method="lasso2", feat_cols=bg_cols, bias_cols=bias_cols )
-# bgl_glm  <- loto( data=tr, method="glm",    feat_cols=bg_cols, bias_cols=bias_cols )
-# bgl_glmm <- loto( data=tr, method="glmm",   feat_cols=bg_cols, bias_cols=bias_cols )
 bgl_xgb  <- bl_xgb
 
 
@@ -1566,25 +1601,43 @@ bg_las <- cv.glmnet( x=as.matrix( tr[ , ..bg_cols ] )[,-1],
                      foldid=as.integer( as.factor(tr$trait) ),
                      y=tr[["causal"]], family="binomial" )
 
+# Removing ExWAS traits
+exwas_traits <- c( "Ca", "eBMD", "Hb", "HbA1c", "Height", "LDLC", "TBil" )
+tr_ex <- tr[ !( tr$trait %in% exwas_traits ) , ]
+bg_las_ex <- cv.glmnet( x=as.matrix( tr_ex[ , ..bg_cols ] )[,-1], 
+                        foldid=as.integer( as.factor(tr_ex$trait) ),
+                        y=tr_ex[["causal"]], family="binomial" )
+
 
 #-------------------------------------------------------------------------------
-#   Train and save a recalibration model
+#   Train a recalibration model, save CALDERA models to file
 #-------------------------------------------------------------------------------
 
 # Train a recalibration model
-recal_preds <- recalibrate_preds( df=tr, model=bg_las, method="lasso2", 
-                                  bias_cols=bias_cols )
-recal_mod   <- recalibration_model( data=recal_preds )
-recal_preds$recal <- predict( object=recal_mod$gam, newdata=recal_preds )
-
-# Get mean values for each bias column
-mean_bias <- colMeans( x=tr[ , ..bias_cols ] )
+recal_preds       <- recalibrate_preds( df=tr, model=bg_las, method="lasso2", 
+                                        bias_cols=bias_cols )
+recal_mod         <- recalibration_model( data=recal_preds )
+recal_preds$recal <- predict( object=recal_mod$lasso, 
+                              newx=as.matrix(recal_preds[ , c( "global", "relative" ) ] ),
+                              s="lambda.min", type="response" )
+cov_means <- colMeans( x=tr[ , ..bias_cols ] )
 
 # Save the LOTO and recalibration models
 # saveRDS( object=bgl_las,   file=file.path( maindir, "bgl_las.rds" ) )
 # saveRDS( object=bg_las,    file=file.path( maindir, "bg_las.rds" ) )
 # saveRDS( object=recal_mod, file=file.path( maindir, "bg_las_recal_mod.rds" ) )
-# saveRDS( object=mean_bias, file=file.path( maindir, "mean_bias.rds" ) )
+# saveRDS( object=cov_means, file=file.path( maindir, "cov_means.rds" ) )
+
+# Train a recalibration model: ExWAS
+recal_preds_ex <- recalibrate_preds( df=tr_ex, model=bg_las_ex, 
+                                     method="lasso2", bias_cols=bias_cols )
+recal_mod_ex   <- recalibration_model( data=recal_preds_ex )
+cov_means_ex   <- colMeans( x=tr_ex[ , ..bias_cols ] )
+
+# Save the LOTO and recalibration models
+# saveRDS( object=bg_las_ex,    file=file.path( maindir, "bg_las_ex.rds" ) )
+# saveRDS( object=recal_mod_ex, file=file.path( maindir, "bg_las_recal_mod_ex.rds" ) )
+# saveRDS( object=cov_means_ex, file=file.path( maindir, "cov_means_ex.rds" ) )
 
 
 #-------------------------------------------------------------------------------
@@ -1594,26 +1647,25 @@ mean_bias <- colMeans( x=tr[ , ..bias_cols ] )
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
-#   Figure 1: AUPRC barplots
+#   Figure 1: AUPRC barplots, scatterplot with/without GLCs
 #-------------------------------------------------------------------------------
 
 # Extract AUPRC and 95% CI for all models
-fl_las_pr    <- plot_loto_pr( loto_obj=fl_las,   color=viridis(11), legend=TRUE )
-bl_las_pr    <- plot_loto_pr( loto_obj=bl_las,   color=viridis(11), legend=TRUE )
-bgl_las_pr   <- plot_loto_pr( loto_obj=bgl_las,  color=viridis(11), legend=TRUE )
-bgl_lasc_pr  <- plot_loto_pr( loto_obj=bgl_las,  color=viridis(11), legend=TRUE, 
-                             type="recalibrated" )
 fl_xgb_pr    <- plot_loto_pr( loto_obj=fl_xgb,   color=viridis(11), legend=TRUE )
-bl_xgb_pr    <- plot_loto_pr( loto_obj=bl_xgb,   color=viridis(11), legend=TRUE )
-bgl_xgb_pr   <- plot_loto_pr( loto_obj=bgl_xgb,  color=viridis(11), legend=TRUE )
-bgl_xgbc_pr  <- plot_loto_pr( loto_obj=bgl_xgb,  color=viridis(11), legend=TRUE,
-                             type="recalibrated" )
-# bgl_glm_pr   <- plot_loto_pr( loto_obj=bgl_glm,  color=viridis(11), legend=TRUE )
-# bgl_glmm_pr  <- plot_loto_pr( loto_obj=bgl_glmm, color=viridis(11), legend=TRUE )
-# bgl_glmc_pr  <- plot_loto_pr( loto_obj=bgl_glm,  color=viridis(11), legend=TRUE,
-#                               type="recalibrated" )
-# bgl_glmmc_pr <- plot_loto_pr( loto_obj=bgl_glmm, color=viridis(11), legend=TRUE,
-#                               type="recalibrated" )
+fl_las_pr        <- plot_loto_pr( loto_obj=fl_las,   color=viridis(11), legend=TRUE )
+bl_las_pr        <- plot_loto_pr( loto_obj=bl_las,   color=viridis(11), legend=TRUE )
+bgl_las_pr       <- plot_loto_pr( loto_obj=bgl_las,  color=viridis(11), legend=TRUE )
+bgl_las_recal_pr <- plot_loto_pr( loto_obj=bgl_las,  color=viridis(11), legend=TRUE, 
+                                  type="recalibrated" )
+bgl_las_gam_pr   <- plot_loto_pr( loto_obj=bgl_las,  color=viridis(11), legend=TRUE, 
+                                  type="gam" )
+
+# Get the random AUPRC
+rand_prc <- pr.curve( scores.class0 = tr$rand[  tr$causal ], 
+                 scores.class1 = tr$rand[ !tr$causal ], 
+                 curve = TRUE )
+rand_pr  <- aucpr.conf.int.expit( estimate = rand_prc$auc.integral, 
+                                  num.pos  = sum(tr$causal) )
 
 # Figure 1: set up
 fig_dir   <- file.path( maindir, "figures" )
@@ -1624,26 +1676,23 @@ par( mfrow=c(1,2) )
 par( mar=c(7,5,1,1) )
 
 # Plot Figure 1A
-f_pr <- rbind( fl_xgb_pr, fl_las_pr )
-dimnames(f_pr)[[1]] <- c( "XGBoost", "LASSO" )
-bp1 <- barplot( height=f_pr[,"auprc"], las=2, 
-               ylab="AUPRC (±95% CI)", ylim=c( 0, 0.7 ),
-               col=brewer.pal( n=6, name="Greens" )[1:2] )
+all_pr <- rbind( rand_pr, fl_xgb_pr, fl_las_pr, bl_las_pr, bgl_las_recal_pr )
+dimnames(all_pr)[[1]] <- c( "Random", "XGBoost (full)", "LASSO (full)",
+                            "LASSO (basic)", "CALDERA" )
+bp1 <- barplot( height=all_pr[,"auprc"], las=2, 
+                ylab="AUPRC (±95% CI)", ylim=c( 0, 0.7 ),
+                col=brewer.pal( n=6, name="Greens" )[1:5] )
 for( i in seq_along(bp1) ){
-  lines( x = c( bp1[i],          bp1[i] ), lwd=1.5,
-         y = c( f_pr[ i, "lo" ], f_pr[ i, "hi" ] ) )
+  lines( x = c( bp1[i],            bp1[i] ), lwd=1.5,
+         y = c( all_pr[ i, "lo" ], all_pr[ i, "hi" ] ) )
 }
 
-# Figure 1B
-auprcs <- rbind( fl_las_pr, bl_las_pr, bgl_las_pr, bgl_lasc_pr )
-dimnames(auprcs)[[1]] <- c( "Full", "Basic", "+GLCs", "+Recalibrated" )
-bp2 <- barplot( height=auprcs[,1], las=2, 
-                ylab="AUPRC (±95% CI)", ylim=c( 0, 0.7 ),
-                col=brewer.pal( n=6, name="Greens" )[2:5] )
-for( i in seq_along(bp2) ){
-  lines( x = c( bp2[i],      bp2[i] ), lwd=1.5,
-         y = c( auprcs[i,2], auprcs[i,3] ) )
-}
+# Plot Figure 1B
+plot( bl_las$preds$recal, bgl_las$preds$recal, las=1, lwd=1.5,
+      col=brewer.pal( n=6, name="Greens" )[5],
+      xlab="Causal probability without GLCs", 
+      ylab="Causal probability with GLCs" )
+abline( a=0, b=1, lty=1, lwd=2 )
 
 # Figure 1: wrap up
 par( mfrow=c(1,1) )
@@ -1670,24 +1719,27 @@ lasso_to_forest( las=bg_las, lambda_type="lambda.min", train=tr )
 #-------------------------------------------------------------------------------
 
 # POPS
+bins <- 10
 fig3a_file <- file.path( fig_dir, "figure3a.jpg" )
 jpeg( filename=fig3a_file, width=300*4, height=400*4, res=75*4 )
 plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="pops", 
-                               qmin=0.05, qmax=0.95, g_trans_fun=NULL )
+                               qmin=0.05, qmax=0.95, bins=bins, 
+                               g_trans_fun=NULL )
 dev.off()
 
 # MAGMA
 fig3b_file <- file.path( fig_dir, "figure3b.jpg" )
 jpeg( filename=fig3b_file, width=300*4, height=400*4, res=75*4 )
 plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="magma", 
-                               qmin=0.05, qmax=0.95, g_trans_fun=NULL )
+                               qmin=0.05, qmax=0.95, bins=bins, 
+                               g_trans_fun=NULL )
 dev.off()
 
 # Distance
 fig3c_file <- file.path( fig_dir, "figure3c.jpg" )
 jpeg( filename=fig3c_file, width=300*4, height=400*4, res=75*4 )
 plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="dist_gene", 
-                               qmin=0.05, qmax=0.95, 
+                               qmin=0.05, qmax=0.95, bins=bins,
                                g_trans_fun=function(x) 10^-x - 1e3 )
 dev.off()
 
@@ -1695,7 +1747,8 @@ dev.off()
 fig3d_file <- file.path( fig_dir, "figure3d.jpg" )
 jpeg( filename=fig3d_file, width=300*4, height=400*4, res=75*4 )
 plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="coding",
-                               qmin=0, qmax=1, g_trans_fun=NULL )
+                               qmin=0, qmax=1, bins=bins, 
+                               g_trans_fun=NULL )
 dev.off()
 
 
@@ -1707,29 +1760,24 @@ dev.off()
 fig4_file <- file.path( fig_dir, "figure4.jpg" )
 jpeg( filename=fig4_file, width=600*4, height=300*4, res=75*4 )
 p1 <- cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=pred, 
-                         conf_level=0.95 ) +
+                         include_rug=FALSE, conf_level=0.95 ) +
   ggtitle("Original predictions") +
-  xlab("CALDERA predicted probability") + 
+  xlab("Uncalibrated predicted probability") + 
   ylab("Ground truth probability")
 p2 <- cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=recal, 
-                         conf_level=0.95 ) +
+                         include_rug=FALSE, conf_level=0.95 ) +
   ggtitle("Recalibrated predictions") +
   xlab("CALDERA predicted probability") + 
   ylab("Ground truth probability")
 grid.arrange( p1, p2, ncol=2 )
 dev.off()
 
-# Scaled (for comparison)
-p3 <- cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=scaled, 
-                   conf_level=0.95 ) +
-  ggtitle("Locally-scaled predictions")
-grid.arrange( p2, p3, ncol=2 )
-
-# Modeled (for comparison)
-p4 <- cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=local, 
-                         conf_level=0.95 ) +
-  ggtitle("Locally-modelled predictions")
-grid.arrange( p2, p4, ncol=2 )
+# GAM, scaled
+p3 <- cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=gam, 
+                         include_rug=FALSE, conf_level=0.95 ) + ggtitle("GAM")
+p4 <- cal_plot_logistic( .data=bgl_las$preds, truth=causal, estimate=scaled, 
+                         include_rug=FALSE, conf_level=0.95 ) + ggtitle("Scaled")
+grid.arrange( p1, p2, p3, p4, ncol=2 )
 
 # How do predictions differ before/after calibration?
 plot( bgl_las$preds$pred, bgl_las$preds$recal, las=1, col="steelblue", lwd=1.5,
@@ -1739,16 +1787,8 @@ abline( a=0, b=1, lty=2, lwd=2 )
 # LOESS
 plot_prob_relationship_smooth( data=bgl_las$preds, varname="pred" )
 plot_prob_relationship_smooth( data=bgl_las$preds, varname="recal" )
-plot_prob_relationship_smooth( data=bgl_las$preds, varname="local" )
+plot_prob_relationship_smooth( data=bgl_las$preds, varname="gam" )
 plot_prob_relationship_smooth( data=bgl_las$preds, varname="scaled" )
-
-# How do predictions compare for LASSO and XGBoost?
-plot( bgl_las$preds$recal, bgl_xgb$preds$recal, las=1, col="steelblue", lwd=1.5,
-      xlab="LASSO", ylab="XGBoost" )
-abline( a=0, b=1, lty=2, lwd=2 )
-summary(  abs( bgl_las$preds$recal - bgl_xgb$preds$recal ) )
-quantile( abs( bgl_las$preds$recal - bgl_xgb$preds$recal ), 
-          probs=seq( 0.9, 1, 0.01 ) )
 
 # How do predictions compare for LASSO and GLMM?
 plot( bgl_las$preds$recal, bgl_glmm$preds$recal, las=1, col="steelblue", lwd=1.5,
@@ -1765,6 +1805,32 @@ abline( a=0, b=1, lty=2, lwd=2 )
 summary(  abs( bgl_glm$preds$recal - bgl_glmm$preds$recal ) )
 quantile( abs( bgl_glm$preds$recal - bgl_glmm$preds$recal ), 
           probs=seq( 0.9, 1, 0.01 ) )
+
+# Plot the largest 4 traits
+ncausal <- sort( tapply(X=bgl_las_uniq$preds$causal, 
+                        INDEX=bgl_las_uniq$preds$trait, 
+                        FUN=sum ), decreasing=TRUE )
+p1 <- cal_plot_logistic( .data=bgl_las_uniq$preds[ bgl_las_uniq$preds$trait == names(ncausal)[1] ], 
+                         truth=causal, estimate=recal, conf_level=0.95 ) +
+  ggtitle( names(ncausal)[1] ) +
+  xlab("CALDERA predicted probability") + 
+  ylab("Ground truth probability")
+p2 <- cal_plot_logistic( .data=bgl_las_uniq$preds[ bgl_las_uniq$preds$trait == names(ncausal)[2] ], 
+                         truth=causal, estimate=recal, conf_level=0.95 ) +
+  ggtitle( names(ncausal)[2] ) +
+  xlab("CALDERA predicted probability") + 
+  ylab("Ground truth probability")
+p3 <- cal_plot_logistic( .data=bgl_las_uniq$preds[ bgl_las_uniq$preds$trait == names(ncausal)[3] ], 
+                         truth=causal, estimate=recal, conf_level=0.95 ) +
+  ggtitle( names(ncausal)[3] ) +
+  xlab("CALDERA predicted probability") + 
+  ylab("Ground truth probability")
+p4 <- cal_plot_logistic( .data=bgl_las_uniq$preds[ bgl_las_uniq$preds$trait == names(ncausal)[4] ], 
+                         truth=causal, estimate=recal, conf_level=0.95 ) +
+  ggtitle( names(ncausal)[4] ) +
+  xlab("CALDERA predicted probability") + 
+  ylab("Ground truth probability")
+grid.arrange( p1, p2, p3, p4, ncol=2 )
 
 
 #-------------------------------------------------------------------------------
@@ -1786,13 +1852,13 @@ par( mar=c(7,5,1,1) )
 bp <- barplot( height=lg_pr$pr[,"auprc"], las=2, 
                ylab="AUPRC (±95% CI)", ylim=c( 0, 0.9 ),
                col=c( brewer.pal( n=6, name="Greens" )[5], 
-                      brewer.pal( n=6, name="Blues" )[2] ) )
+                      brewer.pal( n=6, name="Blues"  )[2] ) )
 for( i in seq_along(bp) ){
   lines( x = c( bp[i],               bp[i] ), lwd=1.5,
          y = c( lg_pr$pr[ i, "lo" ], lg_pr$pr[ i, "hi" ] ) )
 }
 
-# Open Targets benchmarking set
+# ExWAS benchmarking set
 bp <- barplot( height=ex_pr$pr[,"auprc"], las=2, 
                ylab="AUPRC (±95% CI)", ylim=c( 0, 0.9 ),
                col=c( brewer.pal( n=6, name="Greens" )[5], 
@@ -1820,45 +1886,102 @@ two_sample_z_test( mean1 = ex_pr$pr[ "CALDERA", "auprc_logit" ],
 
 
 #-------------------------------------------------------------------------------
-#   Figure S1: Predictions before and after GLCs
+#   Figure S1: Prediction comparisons across the evolution of CALDERA
 #-------------------------------------------------------------------------------
 
-# How do predictions differ before/after adding GLCs?
+# Get set up
 fig_s1_file <- file.path( fig_dir, "figure_s1.jpg" )
-jpeg( filename=fig_s1_file, width=300*4, height=300*4, res=75*4 )
+jpeg( filename=fig_s1_file, width=200*4, height=600*4, res=75*4 )
 par( mar=c(5,5,1,1) )
-plot( bl_las$preds$pred, bgl_las$preds$pred, las=1, lwd=1.5,
+par( mfrow=c(3,1) )
+
+# How do predictions compare for XGBoost and LASSO using the full feature set?
+plot( fl_xgb$preds$pred, fl_las$preds$pred, las=1, lwd=1.5,
       col=brewer.pal( n=6, name="Greens" )[5],
-      xlab="Causal probability without GLCs", 
-      ylab="Causal probability with GLCs" )
-abline( a=0, b=1, lty=1, lwd=2 )
-dev.off()
-
-# Other
-lines( lowess( bl_las$preds$pred, bgl_las$preds$pred, f=0.05 ), lty=2, lwd=2 )
-
-# Compare coefficients with/without GLC correction
-coef1 <- as.data.frame( as.matrix( coef( bg_las, s="lambda.min" ) ) )
-coef2 <- as.data.frame( as.matrix( coef( b_las,  s="lambda.min" ) ) )
-shared_feats <- intersect( row.names(coef1)[ coef1$s1 !=0 ], 
-                           row.names(coef2)[ coef2$s1 !=0 ] )[-1]
-df <- data.frame( feature = shared_feats,
-                  without = coef2$s1[ match( shared_feats, row.names(coef1) ) ],
-                  with    = coef1$s1[ match( shared_feats, row.names(coef2) ) ] )
-plot( df$without, df$with, las=1, cex=1.5, col="steelblue", 
-      xlab="Without", ylab="With" )
+      xlab="XGBoost (full)", ylab="LASSO (full)" )
 abline( a=0, b=1, lty=2, lwd=2 )
 
+# How do predictions compare for LASSO full v. basic?
+plot( fl_las$preds$pred, bl_las$preds$pred, las=1, lwd=1.5,
+      col=brewer.pal( n=6, name="Greens" )[5], 
+      xlab="LASSO (full)", ylab="LASSO (basic)" )
+abline( a=0, b=1, lty=2, lwd=2 )
 
-#-------------------------------------------------------------------------------
-#   Figure S3: Predictions before and after GLCs
-#-------------------------------------------------------------------------------
-
-# How do predictions differ before/after adding GLCs?
-fig_s3_file <- file.path( fig_dir, "figure_s3.jpg" )
-jpeg( filename=fig_s3_file, width=600*4, height=600*4, res=75*4 )
-grid.arrange( lg_pr$p1, ex_pr$p1, lg_pr$p2, ex_pr$p2, ncol=2 )
+# How do predictions compare for LASSO basic v. CALDERA?
+plot( bl_las$preds$pred, bgl_las$preds$recal, las=1, lwd=1.5,
+      col=brewer.pal( n=6, name="Greens" )[5], 
+      xlab="LASSO (basic)", ylab="CALDERA" )
+abline( a=0, b=1, lty=2, lwd=2 )
 dev.off()
+
+# Large LASSO (full) predictions that are small XGBoost (full) predictions
+idx <- fl_xgb$preds$pred < 0.7 & fl_las$preds$pred > 0.9
+tr[idx,]
+
+
+#-------------------------------------------------------------------------------
+#   Figure S2: Calibration of CALDERA and L2G in Open Targets and ExWAS
+#-------------------------------------------------------------------------------
+
+fig_s2_file <- file.path( fig_dir, "figure_s2.jpg" )
+jpeg( filename=fig_s2_file, width=600*4, height=600*4, res=75*4 )
+grid.arrange( lg_pr$p2, ex_pr$p2, lg_pr$p1, ex_pr$p1, ncol=2 )
+dev.off()
+
+
+#-------------------------------------------------------------------------------
+#   Figure S3: AUPRC without pseudoreplication
+#-------------------------------------------------------------------------------
+
+# Loop through each unique causal gene and extract one random TCP
+unique_ensg_c <- unique(tr$ensgid_c)
+uniq_tcps0 <- list()
+set.seed(1)
+for( i in unique_ensg_c ){
+  
+  # Subset to the focal causal gene, find unique TCPs
+  gcols <- c( "trait", "region", "cs_id" )
+  sub  <- tr[ tr$ensgid_c == i , ..gcols ]
+  sub2 <- sub[ !duplicated(sub) , ]
+  
+  # Save a random TCP
+  idx <- sample( x=NROW(sub2), size=1 )
+  uniq_tcps0[[i]] <- sub2[idx,]
+}
+uniq_tcps <- as.data.frame( do.call( rbind, uniq_tcps0 ) )
+
+# Use an inner join to subset the original data to unique TCPs
+tr_uniq <- tr %>% inner_join(uniq_tcps)
+table(tr$causal); table(tr_uniq$causal)
+
+# Run LOTO on unique TCPs, extract AUPRC and 95% CI
+bgl_las_uniq    <- loto( data=tr_uniq, method="lasso2", feat_cols=bg_cols, 
+                         bias_cols=bias_cols )
+bgl_las_uniq_pr <- plot_loto_pr( loto_obj=bgl_las_uniq, type="recalibrated", 
+                                 color=viridis(11), legend=TRUE )
+
+# Bind AUPRCs for non-unique and unique causal genes
+u_pr <- rbind( bgl_las_recal_pr, bgl_las_uniq_pr )
+dimnames(u_pr)[[1]] <- c("CALDERA", "Unique causal genes")
+
+# Plot
+fig_s3_file <- file.path( fig_dir, "figure_s3.jpg" )
+jpeg( filename=fig_s3_file, width=300*4, height=300*4, res=75*4 )
+par( mar=c(9,5,1,1) )
+bp <- barplot(height=u_pr[, "auprc"], las=2, ylab="AUPRC (±95% CI)", 
+              ylim=c( 0, 0.7 ), col=brewer.pal( n=6, name="Greens" )[5:4])
+for (i in seq_along(bp) ) {
+  lines( x=c( bp[i],           bp[i] ), lwd=1.5,
+         y=c( u_pr[ i, "lo" ], u_pr[ i, "hi" ] ) )
+}
+par( mar=c(5,5,1,1) )
+dev.off()
+
+# Two-sample z-test
+two_sample_z_test( mean1 = u_pr[ "All causal genes",    "auprc_logit" ], 
+                   mean2 = u_pr[ "Unique causal genes", "auprc_logit" ], 
+                   se1   = u_pr[ "All causal genes",    "se_logit" ], 
+                   se2   = u_pr[ "Unique causal genes", "se_logit" ] )
 
 
 #-------------------------------------------------------------------------------
@@ -1925,6 +2048,17 @@ summary( ( bl_las$preds$pred - bgl_las$preds$pred )[ bl_las$preds$pred > 0.2 ] )
 tab               <- table( tr$ensgid[tr$causal], tr$trait[tr$causal] )
 n_traits_per_gene <- apply( X=tab, MARGIN=1, FUN=function(x) sum( x > 0 ) )
 table( n_traits_per_gene > 1 )
+
+
+#-------------------------------------------------------------------------------
+#   GLM v. GLMM
+#-------------------------------------------------------------------------------
+
+bgl_glm  <- loto( data=tr, method="glm",    feat_cols=bg_cols, bias_cols=bias_cols )
+bgl_glmm <- loto( data=tr, method="glmm",   feat_cols=bg_cols, bias_cols=bias_cols )
+bgl_glm_pr   <- plot_loto_pr( loto_obj=bgl_glm,  color=viridis(11), legend=TRUE )
+bgl_glmm_pr  <- plot_loto_pr( loto_obj=bgl_glmm, color=viridis(11), legend=TRUE )
+rbind( bgl_glm_pr, bgl_glmm_pr )
 
 
 #-------------------------------------------------------------------------------
@@ -2930,22 +3064,73 @@ aucpr.conf.int.expit( estimate = prc$auc.integral,
 
 
 #-------------------------------------------------------------------------------
+#   AUPRC separately for each trait
+#-------------------------------------------------------------------------------
+
+# Full dataset
+auprc0 <- list()
+for( i in bgl_las$trait ){
+  prc <- pr.curve( scores.class0 = bgl_las$preds$recal[  bgl_las$preds$causal & 
+                                                           bgl_las$preds$trait==i ], 
+                   scores.class1 = bgl_las$preds$recal[ !bgl_las$preds$causal & 
+                                                          bgl_las$preds$trait==i ], 
+                   curve = TRUE )
+  auprc0[[i]] <- aucpr.conf.int.expit( estimate = prc$auc.integral, 
+                                       num.pos  = sum( bgl_las$preds$causal &
+                                                         bgl_las$preds$trait==i ) )
+}
+
+# Independent dataset
+auprc0 <- list()
+for( i in bgl_las_uniq$trait ){
+  prc <- pr.curve( scores.class0 = bgl_las_uniq$preds$recal[  bgl_las_uniq$preds$causal & 
+                                                           bgl_las_uniq$preds$trait==i ], 
+                   scores.class1 = bgl_las_uniq$preds$recal[ !bgl_las_uniq$preds$causal & 
+                                                          bgl_las_uniq$preds$trait==i ], 
+                   curve = TRUE )
+  auprc0[[i]] <- aucpr.conf.int.expit( estimate = prc$auc.integral, 
+                                       num.pos  = sum( bgl_las_uniq$preds$causal &
+                                                         bgl_las_uniq$preds$trait==i ) )
+}
+
+# Plot
+auprc <- as.data.frame( do.call( rbind, auprc0) )
+auprc <- auprc[ order(auprc$auprc) , ]
+mean_re <- rma( yi=auprc$auprc_logit, sei=auprc$se_logit )
+mean_fe <- rma( yi=auprc$auprc_logit, sei=auprc$se_logit, method="FE" )
+forest_plot( df=auprc, value.col="auprc", mtext.col=NULL, xlab="AUPRC",
+             margins=c(5,6,1,1) )
+abline( v=mean_fe$beta[1,1], lty=2, lwd=1 )
+
+
+#-------------------------------------------------------------------------------
 #   Plot features v. residuals
 #-------------------------------------------------------------------------------
 
 # Plot features v. residuals
 plot_residuals <- function( data, model, variable ){
-  plot( data[[variable]], residuals(model),
+  
+  # Get LASSO deviance residuals
+  preds  <- model$preds$recal
+  resids <- -2 * ( ( as.integer(model$preds$causal)  * log(preds) ) + 
+                   ( as.integer(!model$preds$causal) * log(1-preds) ) )
+  
+  # Plot
+  plot( data[[variable]], resids,
         xlim=quantile( data[[variable]], probs=c( 0.05, 0.95 ) ),
-        ylim=quantile( residuals(model), probs=c( 0.05, 0.95 ) ) )
-  lines( lowess( data[[variable]], residuals(model) ), lwd=3, col="orange2" )
+        ylim=quantile( resids, probs=c( 0.05, 0.95 ) ) )
+  
+  # Lines
+  abline( h=0, lwd=3, col="grey" )
+  lines( lowess( data[[variable]], resids ), lwd=3, col="orange2" )
 }
-plot_residuals( data=tr, model=s_glm, variable="pops_glo" )
-plot_residuals( data=tr, model=s_glm, variable="pops_rel" )
-plot_residuals( data=tr, model=s_glm, variable="dist_gene_rel" )
-plot_residuals( data=tr, model=s_glm, variable="magma_rel" )
-plot_residuals( data=tr, model=s_glm, variable="coding_glo" )
-plot_residuals( data=tr, model=s_glm, variable="coding_rel" )
+plot_residuals( data=tr, model=bgl_las, variable="pops_glo" )
+plot_residuals( data=tr, model=bgl_las, variable="pops_rel" )
+plot_residuals( data=tr, model=bgl_las, variable="dist_gene_rel" )
+plot_residuals( data=tr, model=bgl_las, variable="magma_glo" )
+plot_residuals( data=tr, model=bgl_las, variable="magma_rel" )
+plot_residuals( data=tr, model=bgl_las, variable="coding_glo" )
+plot_residuals( data=tr, model=bgl_las, variable="coding_rel" )
 
 
 #-------------------------------------------------------------------------------
@@ -3114,6 +3299,87 @@ pweibull( q = log10( seq( 1e5, 5e5, 1e5 ) ),
 pweibull( q = log10( seq( 1e5, 5e5, 1e5 ) ), 
           shape = fit_w$estimate["shape"], 
           scale = fit_w$estimate["scale"] )
+
+
+#-------------------------------------------------------------------------------
+#   Previous Figure 1: AUPRC barplots
+#-------------------------------------------------------------------------------
+
+# Figure 1: set up
+fig_dir   <- file.path( maindir, "figures" )
+fig1_file <- file.path( fig_dir, "figure1.jpg" )
+dir.create( path=fig_dir, showWarnings=FALSE, recursive=TRUE )
+jpeg( filename=fig1_file, width=600*4, height=300*4, res=75*4 )
+par( mfrow=c(1,2) )
+par( mar=c(7,5,1,1) )
+
+# Plot Figure 1A
+f_pr <- rbind( fl_xgb_pr, fl_las_pr )
+dimnames(f_pr)[[1]] <- c( "XGBoost", "LASSO" )
+bp1 <- barplot( height=f_pr[,"auprc"], las=2, 
+                ylab="AUPRC (±95% CI)", ylim=c( 0, 0.7 ),
+                col=brewer.pal( n=6, name="Greens" )[1:2] )
+for( i in seq_along(bp1) ){
+  lines( x = c( bp1[i],          bp1[i] ), lwd=1.5,
+         y = c( f_pr[ i, "lo" ], f_pr[ i, "hi" ] ) )
+}
+
+# Figure 1B
+auprcs <- rbind( fl_las_pr, bl_las_pr, bgl_las_pr, bgl_las_recal_pr )
+dimnames(auprcs)[[1]] <- c( "Full", "Basic", "+GLCs", "CALDERA" )
+bp2 <- barplot( height=auprcs[,1], las=2, 
+                ylab="AUPRC (±95% CI)", ylim=c( 0, 0.7 ),
+                col=brewer.pal( n=6, name="Greens" )[2:5] )
+for( i in seq_along(bp2) ){
+  lines( x = c( bp2[i],      bp2[i] ), lwd=1.5,
+         y = c( auprcs[i,2], auprcs[i,3] ) )
+}
+
+# Figure 1: wrap up
+par( mfrow=c(1,1) )
+dev.off()
+
+
+#-------------------------------------------------------------------------------
+#   Previous Figure S1: Predictions before and after GLCs
+#-------------------------------------------------------------------------------
+
+# How do predictions differ before/after adding GLCs?
+fig_s1_file <- file.path( fig_dir, "figure_s1.jpg" )
+jpeg( filename=fig_s1_file, width=300*4, height=300*4, res=75*4 )
+par( mar=c(5,5,1,1) )
+plot( bl_las$preds$pred, bgl_las$preds$pred, las=1, lwd=1.5,
+      col=brewer.pal( n=6, name="Greens" )[5],
+      xlab="Causal probability without GLCs", 
+      ylab="Causal probability with GLCs" )
+abline( a=0, b=1, lty=1, lwd=2 )
+dev.off()
+
+# Other
+lines( lowess( bl_las$preds$pred, bgl_las$preds$pred, f=0.05 ), lty=2, lwd=2 )
+
+# Repeat, but on the logit scale
+plot( logit10(bl_las$preds$pred), logit10(bgl_las$preds$pred), las=1, lwd=1.5,
+      col=brewer.pal( n=6, name="Greens" )[5],
+      xlab="Causal probability without GLCs", 
+      # xlim=c( logit10(0.01), logit10(0.95) ),
+      # ylim=c( logit10(0.01), logit10(0.95) ),
+      ylab="Causal probability with GLCs" )
+abline( a=0, b=1, lty=1, lwd=2 )
+lines( lowess( logit10(bl_las$preds$pred), logit10(bgl_las$preds$pred), f=0.05 ), 
+       lty=2, lwd=2 )
+
+# Compare coefficients with/without GLC correction
+coef1 <- as.data.frame( as.matrix( coef( bg_las, s="lambda.min" ) ) )
+coef2 <- as.data.frame( as.matrix( coef( b_las,  s="lambda.min" ) ) )
+shared_feats <- intersect( row.names(coef1)[ coef1$s1 !=0 ], 
+                           row.names(coef2)[ coef2$s1 !=0 ] )[-1]
+df <- data.frame( feature = shared_feats,
+                  without = coef2$s1[ match( shared_feats, row.names(coef1) ) ],
+                  with    = coef1$s1[ match( shared_feats, row.names(coef2) ) ] )
+plot( df$without, df$with, las=1, cex=1.5, col="steelblue", 
+      xlab="Without", ylab="With" )
+abline( a=0, b=1, lty=2, lwd=2 )
 
 
 #-------------------------------------------------------------------------------
