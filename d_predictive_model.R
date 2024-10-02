@@ -1246,7 +1246,7 @@ benchmarking_auprc <- function( l2g_or_exwas, type="recalibrated" ){
   
   # Process features: global
   lg2 <- lg
-  names(lg2)[ names(lg2) == "MAGMA_Z" ] <- "magma_glo"
+  # names(lg2)[ names(lg2) == "MAGMA_Z" ] <- "magma_glo"
   lg2$pops_glo <- ifelse( is.na(lg2$PoPS_Score), 
                           median( lg2$PoPS_Score, na.rm=TRUE ),
                           lg2$PoPS_Score )
@@ -1457,7 +1457,7 @@ te$rand <- rnorm( n=NROW(te) )
 a_cols <- c( "causal", 
              "pops_bil", 
              "dist_gene_bil", "dist_tss_bil",
-             "magma_bil",
+             # "magma_bil",
              "coding_bil",
              "twas_bil", 
              "corr_liu_bil", "corr_and_bil", "corr_uli_bil",
@@ -1471,7 +1471,7 @@ a_cols <- c( "causal",
 # Global features
 glo_cols <- c( "causal", "pops_glo", 
                "dist_gene_glo", "dist_tss_glo",
-               "magma_glo",
+               # "magma_glo",
                "coding_glo",
                "twas_glo",
                "corr_liu_glo", "corr_and_glo", "corr_uli_glo", 
@@ -1481,7 +1481,8 @@ glo_cols <- c( "causal", "pops_glo",
 
 # Relative features
 rel_cols <- c( "causal", "pops_rel", "dist_gene_rel", "dist_tss_rel", 
-               "magma_rel", "coding_rel", "twas_rel", 
+               # "magma_rel", 
+               "coding_rel", "twas_rel", 
                "corr_liu_rel", "corr_and_rel", "corr_uli_rel", 
                "pchic_jung_rel", "pchic_jav_rel",  
                "clpp_rel", "smr_rel", "abc_rel",
@@ -1651,7 +1652,7 @@ cov_means_ex   <- colMeans( x=tr_ex[ , ..bias_cols ] )
 #-------------------------------------------------------------------------------
 
 # Extract AUPRC and 95% CI for all models
-fl_xgb_pr    <- plot_loto_pr( loto_obj=fl_xgb,   color=viridis(11), legend=TRUE )
+fl_xgb_pr        <- plot_loto_pr( loto_obj=fl_xgb,   color=viridis(11), legend=TRUE )
 fl_las_pr        <- plot_loto_pr( loto_obj=fl_las,   color=viridis(11), legend=TRUE )
 bl_las_pr        <- plot_loto_pr( loto_obj=bl_las,   color=viridis(11), legend=TRUE )
 bgl_las_pr       <- plot_loto_pr( loto_obj=bgl_las,  color=viridis(11), legend=TRUE )
@@ -1688,7 +1689,7 @@ for( i in seq_along(bp1) ){
 }
 
 # Plot Figure 1B
-plot( bl_las$preds$recal, bgl_las$preds$recal, las=1, lwd=1.5,
+plot( bl_las$preds$pred, bgl_las$preds$pred, las=1, lwd=1.5,
       col=brewer.pal( n=6, name="Greens" )[5],
       xlab="Causal probability without GLCs", 
       ylab="Causal probability with GLCs" )
@@ -2068,6 +2069,8 @@ rbind( bgl_glm_pr, bgl_glmm_pr )
 # Get ENSGIDs for genes with P(causal) > 50% and those without
 c_genes <- unique( tr$ensgid[ bgl_las$preds$recal >  0.5 ] )
 n_genes <- unique( tr$ensgid[ bgl_las$preds$recal <= 0.5 ] )
+# c_genes <- unique( tr$ensgid[ tr$causal ] )
+# n_genes <- unique( tr$ensgid[ !tr$causal ] )
 
 # Read in Mostafavi data
 mo_file <- "~/projects/causal_genes/mostafavi2023_gene_annots/pc_genes.txt"
@@ -2081,12 +2084,19 @@ mo2$pLI_gt_0.9 <- mo2$pLI > 0.9
 head(mo2)
 
 # Compare high-pLI
-agresti_95ci_prop( X=sum( mo2$causal & mo2$pLI > 0.9 & !is.na(mo2$pLI) ),
-                   n=sum( mo2$causal & !is.na(mo2$pLI) ) )
-agresti_95ci_prop( X=sum( !mo2$causal & mo2$pLI > 0.9 & !is.na(mo2$pLI) ),
-                   n=sum( !mo2$causal & !is.na(mo2$pLI) ) )
+x1 <- agresti_95ci_prop( X=sum( mo2$causal & mo2$pLI > 0.9 & !is.na(mo2$pLI) ),
+                         n=sum( mo2$causal & !is.na(mo2$pLI) ) )
+x2 <- agresti_95ci_prop( X=sum( !mo2$causal & mo2$pLI > 0.9 & !is.na(mo2$pLI) ),
+                         n=sum( !mo2$causal & !is.na(mo2$pLI) ) )
 mod1 <- glm( formula=pLI_gt_0.9 ~ causal, data=mo2, family="binomial" )
 summary(mod1)$coef
+x3 <- as.data.frame( rbind( x1, x2 ) )
+x3$col <- brewer.pal( n=6, name="Greens" )[5]
+row.names(x3) <- c( "Selected genes", "Remaining genes" )
+# row.names(x3) <- c( "Causal genes (training)", "Non-causal genes (training)" )
+forest_plot( df=x3, value.col="prop", mtext.col=NULL, colour.col="col",
+             xlab="Proportion mutation intolerant (pLI > 90%)", xmax=0.3,
+             margins=c(5,12,1,1) )
 
 # Compare TFs
 agresti_95ci_prop( X=sum( mo2$causal & mo2$TF == 1 ),
