@@ -648,17 +648,60 @@ plot_pr <- function( model, test_df, p=0.78, r=0.34, v=0.75,
 plot_mod_pr <- function( pred_col, data ){
   
   # Extract the curve
-  prc <- pr.curve( scores.class0 = data[[pred_col]][ data$causal == 1 ], 
-                   scores.class1 = data[[pred_col]][ data$causal == 0 ], 
-                   curve = TRUE )
+  source("~/repos/raucpr/precision_recall.r")
+  prc <- list()
+  out0 <- list()
+  for( i in pred_col ){
+    prc[[i]] <- pr.curve( scores.class0 = data[[i]][ data$causal == 1 ], 
+                          scores.class1 = data[[i]][ data$causal == 0 ], 
+                          curve = TRUE )
+    out0[[i]] <- aucpr.conf.int.expit( estimate = prc[[i]]$auc.integral,
+                                       num.pos  = sum(data$causal) )
+    # out0[[i]] <- aucpr.conf.int.bootstrap( estimate   = prc[[i]]$auc.integral,
+    #                                        pos.values = data[[i]][ data$causal == 1 ],
+    #                                        neg.values = data[[i]][ data$causal == 0 ],
+    #                                        prcurve.estimator = prcurve.lowertrap )
+  }
+  out <- as.data.frame( do.call( rbind, out0 ) )
+  
+  # Prepare to plot depending on whether it is one trait or many
+  if( length(pred_col) == 1 ){
+    legend       <- TRUE
+    scale.color  <- viridis(11)
+    color        <- TRUE
+    names(color) <- pred_col
+    main         <- pred_col
+    auc.main     <- TRUE
+    legend_names <- NULL
+    par( mar=c(5,5,4,1) )
+  }else{
+    legend       <- FALSE
+    scale.color  <- NULL
+    color        <- c( brewer.pal( n=6, name="Greens" )[5], 
+                       brewer.pal( n=6, name="Reds" )[4], 
+                       brewer.pal( n=6, name="Blues" )[2], 
+                       brewer.pal( n=6, name="Oranges"  )[1] )
+    names(color) <- c( "CALDERA", "FLAMES", "L2G", "cS2G" )
+    main         <- ""
+    auc.main     <- FALSE
+    par( mar=c(5,5,1,1) )
+    legend_names <- rev( paste0( row.names(out), " (", 
+                                 round( out$auprc, digits=2 ), ")" ) )
+  }
   
   # Plot
-  par( mar=c(5,5,4,1) )
-  plot( prc, scale.color=viridis(11), las=1, legend=TRUE )
+  for( i in pred_col ){
+    add <- pred_col[1] != i
+    plot( prc[[i]], scale.color=scale.color, color=color[i], las=1, 
+          legend=legend, add=add, main=main, auc.main=auc.main )
+  }
+  if( length(pred_col) > 1 ){
+    legend( x=1, y=1, xjust=1, legend=legend_names, col=color, lty=1, lwd=3, cex=0.5 )
+    # legend( x=0.05, y=0, yjust=0, legend=legend_names, 
+    #         col=color, lty=1, lwd=3, cex=0.7 )
+  }
   
   # Return AUPRC and 95% CI
-  out <- aucpr.conf.int.expit( estimate = prc$auc.integral, 
-                               num.pos  = sum(data$causal) )
   return(out)
 }
 
@@ -1213,8 +1256,13 @@ benchmarking_auprc <- function( l2g_or_exwas, type="recalibrated" ){
     recal_mod <- readRDS( file=file.path( maindir, "bg_las_recal_mod_ex.rds" ) )
     cov_means <- readRDS( file=file.path( maindir, "cov_means_ex.rds" ) )
     
+  }else if( l2g_or_exwas == "3mt" ){
+    bg_las    <- readRDS( file=file.path( maindir, "bg_las_tmt.rds" ) )
+    recal_mod <- readRDS( file=file.path( maindir, "bg_las_recal_mod_tmt.rds" ) )
+    cov_means <- readRDS( file=file.path( maindir, "cov_means_tmt.rds" ) )
+    
   }else{
-    stop( "l2g_or_exwas must be either 'l2g' or 'exwas'" )
+    stop( "l2g_or_exwas must be either 'l2g', 'exwas', or '3mt'" )
   }
   
   # Read in L2G benchmarking dataset
@@ -1224,15 +1272,22 @@ benchmarking_auprc <- function( l2g_or_exwas, type="recalibrated" ){
   }else if( l2g_or_exwas == "exwas" ){
     lg <- fread( file.path( maindir, "benchmarking_datasets", "ExWAS_benchmark.tsv" ) )
     bench <- "ExWAS"
+  }else if( l2g_or_exwas == "3mt" ){
+    lg <- fread( file.path( maindir, "benchmarking_datasets", "3MT_benchmark.tsv" ) )
+    # lg <- lg[ lg$pheno != "IGF1" , ]
+    bench <- "3MT"
   }else{
     stop( "l2g_or_exwas must be either 'l2g' or 'exwas'" )
   }
   
   # Update column names
-  names(lg)[ names(lg) == "ensg" ]              <- "ensgid"
-  names(lg)[ names(lg) == "Overall L2G score" ] <- "L2G"
-  names(lg)[ names(lg) == "filename" ]          <- "CS_ID"
-  names(lg)[ names(lg) == "TP" ]                <- "causal"
+  names(lg)[ names(lg) == "ensg" ]                <- "ensgid"
+  names(lg)[ names(lg) == "filename" ]            <- "CS_ID"
+  names(lg)[ names(lg) == "TP" ]                  <- "causal"
+  names(lg)[ names(lg) == "weighted_distance" ]   <- "distance"
+  names(lg)[ names(lg) == "Overall L2G score" ]   <- "L2G"
+  names(lg)[ names(lg) == "weighted_cS2G_score" ] <- "cS2G"
+  names(lg)[ names(lg) == "FLAMES_scaled_with_path" ] <- "FLAMES"
   
   # Read in mean bias column values, merge
   for( i in names(cov_means) ){
@@ -1300,7 +1355,7 @@ benchmarking_auprc <- function( l2g_or_exwas, type="recalibrated" ){
            value = b_vals ) 
     }
   }
-  lg2[ tcp == unique(tcp)[1] , ]
+  lg2[ tcp == unique(tcp)[2] , ]
   
   
   #-------------------------------------------------------------------------------
@@ -1330,7 +1385,7 @@ benchmarking_auprc <- function( l2g_or_exwas, type="recalibrated" ){
   
   # Recalibrate
   feat_cols <- recal_mod$lasso$glmnet$beta@Dimnames[[1]]
-  lg2$recal <- predict( recal_mod$lasso, newx=as.matrix( lg2[ , ..feat_cols ] ), 
+  lg2$CALDERA <- predict( recal_mod$lasso, newx=as.matrix( lg2[ , ..feat_cols ] ), 
                         s="lambda.min", type="response" )
   lg2$gam   <- predict( object=recal_mod$gam, newdata=lg2 )
   
@@ -1344,16 +1399,26 @@ benchmarking_auprc <- function( l2g_or_exwas, type="recalibrated" ){
   #-------------------------------------------------------------------------------
   
   # Set the type of prediction to be used
-  if( type == "recalibrated" )  pred_col <- "recal"
+  if( type == "recalibrated" )  pred_col <- "CALDERA"
   if( type == "gam" )           pred_col <- "gam"
   if( type == "uncalibrated" )  pred_col <- "original"
   
   # Remove trait-gene pairs that are missing L2G information
   lg3 <- lg2[ !is.na(lg2$L2G) , ]
+  
+  # Make PR curves, extract AUPRC
   cal_pr <- plot_mod_pr( pred_col=pred_col, data=lg3 )
-  l2g_pr <- plot_mod_pr( pred_col="L2G",   data=lg3 )
-  b_pr <- rbind( cal_pr, l2g_pr )
-  dimnames(b_pr)[[1]] <- c( "CALDERA", "L2G" )
+  l2g_pr <- plot_mod_pr( pred_col="L2G",    data=lg3 )
+  fla_pr <- plot_mod_pr( pred_col="FLAMES", data=lg3 )
+  s2g_pr <- plot_mod_pr( pred_col="cS2G",   data=lg3 )
+  
+  # Make a single PR curve with all methods
+  methods <- c( "cS2G", "L2G", "FLAMES", "CALDERA" )
+  plot_mod_pr( pred_col=methods, data=lg3 )
+  
+  # Bind AUPRCs together
+  b_pr <- rbind( cal_pr, fla_pr, l2g_pr, s2g_pr )
+  dimnames(b_pr)[[1]] <- c( "CALDERA", "FLAMES", "L2G", "cS2G" )
   
   # Plots: L2G
   p1 <- cal_plot_logistic( .data=lg3, truth=causal, estimate=L2G, 
@@ -1363,7 +1428,7 @@ benchmarking_auprc <- function( l2g_or_exwas, type="recalibrated" ){
     ylab("Ground truth probability")
   
   # Plots: CALDERA
-  p2 <- cal_plot_logistic( .data=lg3, truth=causal, estimate=recal, 
+  p2 <- cal_plot_logistic( .data=lg3, truth=causal, estimate=CALDERA, 
                            include_rug=FALSE, conf_level=0.95 ) +
     ggtitle( paste0( bench, " dataset, CALDERA" ) ) +
     xlab("Predicted probability") + 
@@ -1609,6 +1674,13 @@ bg_las_ex <- cv.glmnet( x=as.matrix( tr_ex[ , ..bg_cols ] )[,-1],
                         foldid=as.integer( as.factor(tr_ex$trait) ),
                         y=tr_ex[["causal"]], family="binomial" )
 
+# Removing 3MT traits
+tmt_traits <- "IGF1"
+tr_tmt <- tr[ !( tr$trait %in% tmt_traits ) , ]
+bg_las_tmt <- cv.glmnet( x=as.matrix( tr_tmt[ , ..bg_cols ] )[,-1], 
+                         foldid=as.integer( as.factor(tr_tmt$trait) ),
+                         y=tr_tmt[["causal"]], family="binomial" )
+
 
 #-------------------------------------------------------------------------------
 #   Train a recalibration model, save CALDERA models to file
@@ -1639,6 +1711,17 @@ cov_means_ex   <- colMeans( x=tr_ex[ , ..bias_cols ] )
 # saveRDS( object=bg_las_ex,    file=file.path( maindir, "bg_las_ex.rds" ) )
 # saveRDS( object=recal_mod_ex, file=file.path( maindir, "bg_las_recal_mod_ex.rds" ) )
 # saveRDS( object=cov_means_ex, file=file.path( maindir, "cov_means_ex.rds" ) )
+
+# Train a recalibration model: TMT
+recal_preds_tmt <- recalibrate_preds( df=tr_tmt, model=bg_las_tmt, 
+                                     method="lasso2", bias_cols=bias_cols )
+recal_mod_tmt   <- recalibration_model( data=recal_preds_tmt )
+cov_means_tmt   <- colMeans( x=tr_tmt[ , ..bias_cols ] )
+
+# Save the LOTO and recalibration models
+# saveRDS( object=bg_las_tmt,    file=file.path( maindir, "bg_las_tmt.rds" ) )
+# saveRDS( object=recal_mod_tmt, file=file.path( maindir, "bg_las_recal_mod_tmt.rds" ) )
+# saveRDS( object=cov_means_tmt, file=file.path( maindir, "cov_means_tmt.rds" ) )
 
 
 #-------------------------------------------------------------------------------
@@ -1728,16 +1811,8 @@ plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="pops",
                                g_trans_fun=NULL )
 dev.off()
 
-# MAGMA
-fig3b_file <- file.path( fig_dir, "figure3b.jpg" )
-jpeg( filename=fig3b_file, width=300*4, height=400*4, res=75*4 )
-plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="magma", 
-                               qmin=0.05, qmax=0.95, bins=bins, 
-                               g_trans_fun=NULL )
-dev.off()
-
 # Distance
-fig3c_file <- file.path( fig_dir, "figure3c.jpg" )
+fig3b_file <- file.path( fig_dir, "figure3b.jpg" )
 jpeg( filename=fig3c_file, width=300*4, height=400*4, res=75*4 )
 plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="dist_gene", 
                                qmin=0.05, qmax=0.95, bins=bins,
@@ -1745,7 +1820,7 @@ plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="dist_gene",
 dev.off()
 
 # Coding PIP
-fig3d_file <- file.path( fig_dir, "figure3d.jpg" )
+fig3c_file <- file.path( fig_dir, "figure3c.jpg" )
 jpeg( filename=fig3d_file, width=300*4, height=400*4, res=75*4 )
 plot_logOR_relationship_model( data=tr, model=bg_las, var_prefix="coding",
                                qmin=0, qmax=1, bins=bins, 
@@ -1841,32 +1916,49 @@ grid.arrange( p1, p2, p3, p4, ncol=2 )
 # Compute AUPRCs
 lg_pr <- benchmarking_auprc( l2g_or_exwas="l2g" )
 ex_pr <- benchmarking_auprc( l2g_or_exwas="exwas" )
+mt_pr <- benchmarking_auprc( l2g_or_exwas="3mt" )
 
 # Set up
 fig_dir   <- file.path( maindir, "figures" )
 fig5_file <- file.path( fig_dir, "figure5.jpg" )
 jpeg( filename=fig5_file, width=600*4, height=300*4, res=75*4 )
-par( mfrow=c(1,2) )
+par( mfrow=c(1,3) )
 par( mar=c(7,5,1,1) )
 
 # Open Targets benchmarking set
-bp <- barplot( height=lg_pr$pr[,"auprc"], las=2, 
-               ylab="AUPRC (±95% CI)", ylim=c( 0, 0.9 ),
+bp <- barplot( height=lg_pr$pr[,"auprc"], las=2, names.arg=row.names(lg_pr$pr),
+               ylab="AUPRC (±95% CI)", ylim=c( 0, 1 ),
                col=c( brewer.pal( n=6, name="Greens" )[5], 
-                      brewer.pal( n=6, name="Blues"  )[2] ) )
+                      brewer.pal( n=6, name="Reds" )[4], 
+                      brewer.pal( n=6, name="Blues" )[2], 
+                      brewer.pal( n=6, name="Oranges"  )[1] ) )
 for( i in seq_along(bp) ){
   lines( x = c( bp[i],               bp[i] ), lwd=1.5,
          y = c( lg_pr$pr[ i, "lo" ], lg_pr$pr[ i, "hi" ] ) )
 }
 
 # ExWAS benchmarking set
-bp <- barplot( height=ex_pr$pr[,"auprc"], las=2, 
-               ylab="AUPRC (±95% CI)", ylim=c( 0, 0.9 ),
+bp <- barplot( height=ex_pr$pr[,"auprc"], las=2, names.arg=row.names(lg_pr$pr),
+               ylab="AUPRC (±95% CI)", ylim=c( 0, 1 ),
                col=c( brewer.pal( n=6, name="Greens" )[5], 
-                      brewer.pal( n=6, name="Blues" )[2] ) )
+                      brewer.pal( n=6, name="Reds" )[4], 
+                      brewer.pal( n=6, name="Blues" )[2], 
+                      brewer.pal( n=6, name="Oranges"  )[1] ) )
 for( i in seq_along(bp) ){
   lines( x = c( bp[i],               bp[i] ), lwd=1.5,
          y = c( ex_pr$pr[ i, "lo" ], ex_pr$pr[ i, "hi" ] ) )
+}
+
+# Three molecular traits benchmarking set
+bp <- barplot( height=mt_pr$pr[,"auprc"], las=2, names.arg=row.names(lg_pr$pr),
+               ylab="AUPRC (±95% CI)", ylim=c( 0, 1 ),
+               col=c( brewer.pal( n=6, name="Greens" )[5], 
+                      brewer.pal( n=6, name="Reds" )[4], 
+                      brewer.pal( n=6, name="Blues" )[2], 
+                      brewer.pal( n=6, name="Oranges"  )[1] ) )
+for( i in seq_along(bp) ){
+  lines( x = c( bp[i],               bp[i] ), lwd=1.5,
+         y = c( mt_pr$pr[ i, "lo" ], mt_pr$pr[ i, "hi" ] ) )
 }
 
 # Wrap up
@@ -2043,26 +2135,6 @@ summary( ( bl_las$preds$pred - bgl_las$preds$pred )[ bl_las$preds$pred > 0.2 ] )
 
 
 #-------------------------------------------------------------------------------
-#   Number of genes that are causal for multiple traits
-#-------------------------------------------------------------------------------
-
-tab               <- table( tr$ensgid[tr$causal], tr$trait[tr$causal] )
-n_traits_per_gene <- apply( X=tab, MARGIN=1, FUN=function(x) sum( x > 0 ) )
-table( n_traits_per_gene > 1 )
-
-
-#-------------------------------------------------------------------------------
-#   GLM v. GLMM
-#-------------------------------------------------------------------------------
-
-bgl_glm  <- loto( data=tr, method="glm",    feat_cols=bg_cols, bias_cols=bias_cols )
-bgl_glmm <- loto( data=tr, method="glmm",   feat_cols=bg_cols, bias_cols=bias_cols )
-bgl_glm_pr   <- plot_loto_pr( loto_obj=bgl_glm,  color=viridis(11), legend=TRUE )
-bgl_glmm_pr  <- plot_loto_pr( loto_obj=bgl_glmm, color=viridis(11), legend=TRUE )
-rbind( bgl_glm_pr, bgl_glmm_pr )
-
-
-#-------------------------------------------------------------------------------
 #   Mostafavi-esque gene feature enrichments for causal/non-causal genes
 #-------------------------------------------------------------------------------
 
@@ -2111,6 +2183,26 @@ mean( mo2$promoter_count[ mo2$causal] )
 mean( mo2$promoter_count[ !mo2$causal] )
 mod3 <- glm( formula=promoter_count ~ causal, data=mo2, family="gaussian" )
 summary(mod3)$coef
+
+
+#-------------------------------------------------------------------------------
+#   Number of genes that are causal for multiple traits
+#-------------------------------------------------------------------------------
+
+tab               <- table( tr$ensgid[tr$causal], tr$trait[tr$causal] )
+n_traits_per_gene <- apply( X=tab, MARGIN=1, FUN=function(x) sum( x > 0 ) )
+table( n_traits_per_gene > 1 )
+
+
+#-------------------------------------------------------------------------------
+#   GLM v. GLMM
+#-------------------------------------------------------------------------------
+
+bgl_glm  <- loto( data=tr, method="glm",    feat_cols=bg_cols, bias_cols=bias_cols )
+bgl_glmm <- loto( data=tr, method="glmm",   feat_cols=bg_cols, bias_cols=bias_cols )
+bgl_glm_pr   <- plot_loto_pr( loto_obj=bgl_glm,  color=viridis(11), legend=TRUE )
+bgl_glmm_pr  <- plot_loto_pr( loto_obj=bgl_glmm, color=viridis(11), legend=TRUE )
+rbind( bgl_glm_pr, bgl_glmm_pr )
 
 
 #-------------------------------------------------------------------------------
@@ -3228,9 +3320,10 @@ tree_spec <- decision_tree( tree_depth=3 ) %>%
   set_mode("classification")
 
 # Fit the model to the training data
-d_form <-  as.formula("factor(causal) ~ distance_genebody + pops_glo")
+d_form <-  as.formula( paste( "factor(causal) ~", 
+                              paste( b_cols[-1], collapse=" + " ) ) )
 tree_fit <- tree_spec %>%
-  fit( d_form, data = tr[ tr$pops_and_nearest , ] )
+  fit( d_form, data = tr )
 
 # Plot the decision tree
 rpart.plot( tree_fit$fit, type = 4, under = TRUE, box.palette = "auto")
