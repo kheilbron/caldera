@@ -213,8 +213,9 @@ cnc3 <- cnc2[ cnc2$trait %in% ge_5_causal_per_trait , ]
 table(cnc$causal); table(cnc2$causal); table(cnc3$causal)
 
 # Write causal/non-causal trait-gene pairs to file
-causal_gene_file <- file.path( maindir, "causal_noncausal_trait_gene_pairs",
-                               "causal_noncausal_trait_gene_pairs_300kb.tsv" )
+outdir <- file.path( maindir, "causal_noncausal_trait_gene_pairs" )
+dir.create( path=outdir, showWarnings=FALSE )
+causal_gene_file <- file.path( outdir, "causal_noncausal_trait_gene_pairs_300kb.tsv" )
 fwrite( x=cnc3, file=causal_gene_file, sep="\t" )
 
 

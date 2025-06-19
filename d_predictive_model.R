@@ -648,7 +648,6 @@ plot_pr <- function( model, test_df, p=0.78, r=0.34, v=0.75,
 plot_mod_pr <- function( pred_col, data, make_plot=TRUE ){
   
   # Extract the curve
-  source("~/repos/raucpr/precision_recall.r")
   prc <- list()
   out0 <- list()
   for( i in pred_col ){
@@ -1358,7 +1357,7 @@ benchmarking_auprc <- function( l2g_or_exwas, type="recalibrated" ){
     lg <- fread( file.path( maindir, "benchmarking_datasets", "3MT_benchmark.tsv" ) )
     bench <- "3MT"
   }else{
-    stop( "l2g_or_exwas must be either 'l2g' or 'exwas'" )
+    stop( "l2g_or_exwas must be either 'l2g', 'exwas', or '3mt'" )
   }
   
   # Update column names
@@ -2154,9 +2153,9 @@ par( mar=c(5,5,1,1) )
 dev.off()
 
 # Two-sample z-test
-two_sample_z_test( mean1 = u_pr[ "All causal genes",    "auprc_logit" ], 
+two_sample_z_test( mean1 = u_pr[ "CALDERA",    "auprc_logit" ], 
                    mean2 = u_pr[ "Unique causal genes", "auprc_logit" ], 
-                   se1   = u_pr[ "All causal genes",    "se_logit" ], 
+                   se1   = u_pr[ "CALDERA",    "se_logit" ], 
                    se2   = u_pr[ "Unique causal genes", "se_logit" ] )
 
 
@@ -2189,10 +2188,10 @@ cal_pr$col <- brewer.pal( n=NROW(cal_pr), name="Greens" )
 fig_s5_file <- file.path( fig_dir, "figure_s5.jpg" )
 jpeg( filename=fig_s5_file, width=300*4, height=300*4, res=75*4 )
 plot_loto_pr(bgl_las, type="recalibrated" )
-# points( x=cal_pr$recall, y=cal_pr$precision, pch=19, cex=1.5, col=cal_pr$col )
+points( x=cal_pr$recall, y=cal_pr$precision, pch=19, cex=1.5, col=cal_pr$col )
 points( x=pnn_r,         y=pnn_p,            pch=19, cex=1.5, 
         col=brewer.pal( n=4, name="Blues" )[3] )
-better_pr( p=pnn_p, r=pnn_r, t=0.75 )
+# better_pr( p=pnn_p, r=pnn_r, t=0.75 )
 dev.off()
 
 
