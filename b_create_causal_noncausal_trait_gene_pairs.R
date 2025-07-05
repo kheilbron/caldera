@@ -36,7 +36,10 @@ z_to_p <- function( z, log.p=FALSE ){
 # Remove SNPs that are not in CSs, or are in CSs with the 6th+ worst ABF
 # Subset to SUSIE CSs only
 # Add P value and TCP columns
-cs2 <- cs[  cs$cs_id > 0 & cs$cs_id < 6 & cs$trait %in% it , ]
+n_css <- 6
+cs2 <- cs[  cs$cs_id > 0 & 
+              cs$cs_id <= n_css &
+              cs$trait %in% it , ]
 cs3 <- cs2[ cs2$method == "SUSIE" , ]
 cs3$p <- z_to_p( z=sqrt(cs3$chisq_marginal) )
 cs3$tcp <- paste( cs3$trait, cs3$region, cs3$cs_id, sep="_" )
@@ -84,7 +87,7 @@ tcp_c_all <- unique(tgp_c0$tcp)
 # (preferentially retaining low cs_id)
 tgp_c0 <- tgp_c0[ order( tgp_c0$trait, tgp_c0$region, tgp_c0$cs_id ) , ]
 tgp_c  <- tgp_c0[ tgp_c0$ensgid %in% gencode$ENSGID & 
-                  tgp_c0$cs_id <= 5 & 
+                  tgp_c0$cs_id <= n_css &
                   !duplicated( tgp_c0[ , c( "trait", "ensgid" ) ] ) , ]
 tcp_c <- unique(tgp_c$tcp)
 NROW(tgp_c0); NROW(tgp_c); length(tcp_c)
@@ -144,14 +147,14 @@ for( i in seq_along(tcp_n2) ){
   }
 }
 tcp_n_near0 <- do.call( rbind, tcp_n_near0 )
+tcp_n_near  <- tcp_n_near0
 
 # If a coding TCP is associated with multiple non-coding TCPs, only keep the best cs_id (ABF)
-# tcp_n_near0 <- tcp_n_near0[ order( tcp_n_near0$trait, 
-#                                    tcp_n_near0$region, 
-#                                    tcp_n_near0$cs_id ) , ]
-# tcp_n_near  <- tcp_n_near0[ !duplicated(tcp_n_near0$tcp_c) , ]
-# NROW(tcp_n_near0); NROW(tcp_n_near)
-tcp_n_near <- tcp_n_near0
+tcp_n_near0 <- tcp_n_near0[ order( tcp_n_near0$trait,
+                                   tcp_n_near0$region,
+                                   tcp_n_near0$cs_id ) , ]
+tcp_n_near  <- tcp_n_near0[ !duplicated(tcp_n_near0$tcp_c) , ]
+NROW(tcp_n_near0); NROW(tcp_n_near)
 
 # Extract full CS data for non-coding TCPs near coding TGPs
 cs_n_near  <- cs3[ cs3$tcp %in% tcp_n_near$tcp , ]
@@ -209,7 +212,8 @@ cnc2 <- cnc[ cnc$ngenes_nearby >= 2 , ]
 # Remove traits with <5 causal genes
 n_causal_per_trait <- sort( table( cnc2$trait[ cnc2$causal ] ), decreasing=TRUE )
 ge_5_causal_per_trait <- names(n_causal_per_trait)[ n_causal_per_trait >= 5 ]
-cnc3 <- cnc2[ cnc2$trait %in% ge_5_causal_per_trait , ]
+# cnc3 <- cnc2[ cnc2$trait %in% ge_5_causal_per_trait , ]
+cnc3 <- cnc
 table(cnc$causal); table(cnc2$causal); table(cnc3$causal)
 
 # Write causal/non-causal trait-gene pairs to file
