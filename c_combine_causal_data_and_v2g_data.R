@@ -90,7 +90,9 @@ m <- left_join( x=cnc[ , ..gcols_cnc ],
 #-------------------------------------------------------------------------------
 
 # n_genes
-m$prior_n_genes_locus <- logit10( 1/m$ngenes_nearby )
+m$prior_n_genes_locus <- ifelse( m$ngenes_nearby == 1,
+                                 logit10( 0.75 ),
+                                 logit10( 1/m$ngenes_nearby ) )
 tcp_m <- paste( m$trait, m$region, m$cs_id, sep="_" )
 
 # POPS
@@ -142,6 +144,9 @@ m$magma_glo <- ifelse( is.na(m$magma_score),
                        m$magma_score )
 
 # SMR
+m$smr_raw_l2g <- ifelse( is.na(m$smr_p),
+                         max( m$smr_p, na.rm=TRUE ), 
+                         m$smr_p )
 m$smr_glo <- ifelse( is.na(m$smr_p),
                      -log10( max( m$smr_p, na.rm=TRUE ) ), 
                      -log10(m$smr_p) )
