@@ -16,15 +16,13 @@ message2 <- function(...) message(date(), "     ", ...)
 #   CALDERA
 #-------------------------------------------------------------------------------
 
-caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
+caldera <- function( pops_file, cs_file, caldera_path ){
   
   #-----------------------------------------------------------------------------
   #   Inputs
   #-----------------------------------------------------------------------------
   
   # pops_file:    PoPS output file. Must contain columns: ENSGID and PoPS_Score.
-  # magma_file:   MAGMA output file (.genes.out). Must contain columns: ZSTAT and
-  #               GENE (containing ENSGID).
   # cs_file:      Credible set (CS) file containing all CS variants across all
   #               loci. Used to define loci, the genes therein, and coding PIPs 
   #               for these genes. Must contain columns: locus, chr (chromosome),
@@ -32,11 +30,11 @@ caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
   #               Optionally, you can include a c_gene column containing the
   #               ENSGID of the gene whose coding sequence is affected by the 
   #               given variant (and NA if the variant does not affect any coding
-  #               sequences). Alternatively, a SNP column containing rsIDs can be
+  #               sequences). Alternatively, an "rsid" column containing rsIDs can be
   #               provided and variants will automatically be annotated using
-  #               a list of ~76k UK Biobank coding variants. If SNP is not
+  #               a list of ~76k UK Biobank coding variants. If "rsid" is not
   #               provided, variants will be automatically annotated based on 
-  #               chr and bp.
+  #               chr and (GRCh37) bp.
   # caldera_path: Path to local CALDERA GitHub repository.
   
   
@@ -54,9 +52,6 @@ caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
   # Read in POPS file
   pop <- fread(pops_file)
   
-  # Read in MAGMA file
-  mag <- fread(magma_file)
-  
   # Read in coding variants
   data_dir    <- file.path( caldera_path, "data" )
   coding_file <- file.path( data_dir, "high_h2_coding_SNPs.tsv" )
@@ -66,17 +61,13 @@ caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
   gene_file <- file.path( data_dir, "gene_locations.tsv" )
   gen <- fread(gene_file)
   
-  # Read in CALDERA model 1 (initial)
+  # Read in CALDERA model
   mod_dir  <- file.path( caldera_path, "trained_models" )
-  cal_file1 <- file.path( mod_dir, "caldera_model_step1.rds" )
-  cal_mod1  <- readRDS(cal_file1)
-  
-  # Read in CALDERA model 2 (recalibration)
-  cal_file2 <- file.path( mod_dir, "caldera_model_step2.rds" )
-  cal_mod2  <- readRDS(cal_file2)
+  cal_file <- file.path( mod_dir, "caldera_model.rds" )
+  cal_mod  <- readRDS(cal_file)
   
   # Read in covariate means
-  cov_file <- file.path( mod_dir, "covariate_means.rds" )
+  cov_file <- file.path( mod_dir, "cov_means.rds" )
   cov_means  <- readRDS(cov_file)
   
   
@@ -90,15 +81,9 @@ caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
     stop( "PoPS file must contain columns: ENSGID and PoPS_Score" )
   }
   
-  # magma_file
-  mag_cols <- setdiff( c( "GENE", "ZSTAT" ), names(mag) )
-  if( length(mag_cols) > 0 ){
-    stop( "MAGMA file must contain columns: GENE and ZSTAT" )
-  }
-  
   # cs_file: required columns
-  cs_cols1 <- setdiff( c( "locus", "chr", "bp", "pip" ), names(cs) )
-  if( length(mag_cols) > 0 ){
+  cs_cols <- setdiff( c( "locus", "chr", "bp", "pip" ), names(cs) )
+  if( length(cs_cols) > 0 ){
     stop( "CS file must contain columns: locus, chr, bp, pip" )
   }
   
@@ -106,11 +91,11 @@ caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
   if( "c_gene" %in% names(cs) ){
     message2( "A c_gene column has been provided and will be used to",
               " determine genes affected by coding variants")
-  }else if( "SNP" %in% names(cs) ){
-    message2( "A SNP column has been provided and will be used to determine",
+  }else if( "rsid" %in% names(cs) ){
+    message2( "An rsID column has been provided and will be used to determine",
               " genes affected by a list of ~76k UK Biobank coding variants")
   }else{
-    message2( "Chromosome and position will be used to determine",
+    message2( "Chromosome and (assumed GRCh37) position will be used to determine",
               " genes affected by a list of ~76k UK Biobank coding variants")
   }
   
@@ -127,6 +112,7 @@ caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
     chr    <- sub$chr[1]
     bp     <- mean( sub$bp[ sub$pip == max(sub$pip) ] )
     bp_min <- min(sub$bp) - window
+    if( bp_min < 1 )  bp_min <- 1
     bp_max <- max(sub$bp) + window
     id     <- paste0( chr, "_", bp_min, "_", bp_max )
     loci0[[i]] <- data.table( locus=i, locus_pos=id, chr=chr, bp=bp,
@@ -154,7 +140,7 @@ caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
   
   
   #-----------------------------------------------------------------------------
-  #   Decorate genes with transformed distance, POPS, MAGMA, and coding PIP
+  #   Decorate genes with transformed distance, POPS, and coding PIP
   #-----------------------------------------------------------------------------
   
   # Transform distance
@@ -164,15 +150,11 @@ caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
   genes$pops_glo <- pop$PoPS_Score[ match( genes$ensgid, pop$ENSGID ) ]
   genes$pops_glo[ is.na(genes$pops_glo) ] <- 0
   
-  # Decorate these genes with their MAGMA z scores
-  genes$magma_glo <- mag$ZSTAT[ match( genes$ensgid, mag$GENE ) ]
-  genes$magma_glo[ is.na(genes$magma_glo) ] <- median( genes$magma_glo, na.rm=TRUE )
-  
   # If not already done, annotate coding CS variants
   if( !( "c_gene" %in% names(cs) ) ){
     
-    if( "SNP" %in% names(cs) ){                            # Using rsID
-      cs$c_gene <- cod$ensgid[ match( cs$SNP, cod$SNP ) ]
+    if( "rsid" %in% names(cs) ){                            # Using rsID
+      cs$c_gene <- cod$ensgid[ match( cs$rsid, cod$SNP ) ]
     }else{                                                 # Using chr and pos
       bcols <- c( "CHR", "BP", "ensgid" )
       ccols <- c( "chr", "bp", "c_gene" )
@@ -197,47 +179,6 @@ caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
   
   
   #-----------------------------------------------------------------------------
-  #   Add relative and BIL features
-  #-----------------------------------------------------------------------------
-  
-  # Set up global feature columns and TCPs
-  glo_cols <- grep( "_glo$", x=names(genes), value=TRUE )
-  
-  # Loop through global columns
-  for( j in glo_cols ){
-    
-    # Initialize relative and best-in-locus columns
-    rel_col <- sub( pattern="_glo$", replacement="_rel", x=j )
-    bil_col <- sub( pattern="_glo$", replacement="_bil", x=j )
-    genes[[rel_col]] <- as.numeric(NA)
-    genes[[bil_col]] <- as.logical(NA)
-    
-    # Loop through loci
-    for( i in unique(genes$locus) ){
-      
-      # Subset
-      sub <- genes[ genes$locus == i , ]
-      
-      # Compute relative and best-in-locus values
-      r_vals <- sub[[j]] - max( sub[[j]] )
-      b_vals <- r_vals == 0 & sum( r_vals == 0 ) == 1
-      
-      # Insert relative values into the main data table
-      set( x     = genes, 
-           i     = which( genes$locus == i ), 
-           j     = rel_col, 
-           value = r_vals )
-      
-      # Insert best-in-locus values into the main data table
-      set( x     = genes, 
-           i     = which( genes$locus == i ), 
-           j     = bil_col, 
-           value = b_vals ) 
-    }
-  }
-  
-  
-  #-----------------------------------------------------------------------------
   #   Add covariates
   #-----------------------------------------------------------------------------
   
@@ -247,45 +188,24 @@ caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
   
   
   #-----------------------------------------------------------------------------
-  #   Get uncalibrated predictions, add columns for recalibration, recalibrate
+  #   Get raw and normalized predictions
   #-----------------------------------------------------------------------------
   
-  # Get uncalibrated predictions
-  feat_cols <- cal_mod1$glmnet$beta@Dimnames[[1]]
-  genes$causal_p <- predict( object=cal_mod1, newx=as.matrix( genes[ , ..feat_cols ] ), 
-                      s="lambda.min", type="response" )
-  
-  # Initialize columns needed for recalibration
-  genes$global <- logit(genes$causal_p)
-  genes$best <- genes$relative <- as.numeric(NA)
-  
   # Loop through loci, assign values needed for recalibration
+  genes$raw <- predict( object=cal_mod, newdata=genes, type="response" )
+  genes$caldera <- as.numeric(NA)
   for( i in unique(genes$locus) ){
     
-    # Subset to locus
-    sub <- genes[ genes$locus == i , ]
+    # Subset, scale to 1
+    sub  <- genes[ genes$locus == i , ]
+    scaled <- sub[["raw"]] / sum( sub[["raw"]] )
     
-    # Make variables for relative and BIL scores
-    rel  <- sub$global - max(sub$global)
-    bil  <- ifelse( sub$global == max(sub$global), 1, 0 )
-    
-    # Assign values: relative score
+    # Assign values: scaled
     set( x     = genes, 
          i     = which( genes$locus == i ), 
-         j     = "relative", 
-         value = rel )
-    
-    # Assign values: BIL
-    set( x     = genes, 
-         i     = which( genes$locus == i ), 
-         j     = "best", 
-         value = bil )
+         j     = "caldera", 
+         value = scaled )
   }
-  
-  # Recalibrate
-  recal_cols <- c( "global", "relative" )
-  genes$caldera <- predict( object=cal_mod2$lasso, s="lambda.min", type="response",
-                            newx=as.matrix( genes[ , ..recal_cols ] ) )
   
   
   #-----------------------------------------------------------------------------
@@ -293,13 +213,25 @@ caldera <- function( pops_file, magma_file, cs_file, caldera_path ){
   #-----------------------------------------------------------------------------
   
   # Subset to interesting columns
+  bcols <- c( "locus", "locus_pos", "gene", "caldera", "n_genes", 
+              "dist", "pops_glo", "coding_glo", "ensgid" )
   gcols <- c( "locus", "locus_pos", "gene", "caldera", "n_genes", 
-              "dist", "dist_gene_rel", "pops_glo", "pops_rel", 
-              "magma_glo", "magma_rel", "coding_glo", "coding_rel", "ensgid" )
-  genes2 <- genes[ order( genes$locus, -genes$caldera ) , ..gcols ]
+              "dist", "pops", "coding", "ensgid" )
+  genes2 <- genes[ order( genes$locus, -genes$caldera ) , ..bcols ]
+  names(genes2) <- gcols
   return(genes2)
+  
+  
+  #-----------------------------------------------------------------------------
+  #   Done
+  #-----------------------------------------------------------------------------
+  
 }
 
+
+#-------------------------------------------------------------------------------
+#   Done
+#-------------------------------------------------------------------------------
 
 
 
