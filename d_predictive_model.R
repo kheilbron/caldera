@@ -1029,11 +1029,14 @@ plot_loto_pr <- function( loto_obj, type="original", show_plot=TRUE,
 #   plot_logOR_relationship_smooth: Smoothed P(causal) v. a variable
 #-------------------------------------------------------------------------------
 
-plot_logOR_relationship_smooth <- function( data, varname ){
+plot_logOR_relationship_smooth <- function( data, varname, add_v0=TRUE ){
   
   # Format data
+  prop_miss  <- mean( is.na( data[[varname]] ) )
+  pcausal_na <- mean( data$causal[ is.na( data[[varname]] ) ] )
   data <- as.data.frame(data)
   data <- data.frame( x=data[[varname]], y=data$causal )
+  data <- data[ complete.cases(data) , ]
   
   # Run model, get predictions
   pmode <- max( table(data$x) ) / NROW(data)
@@ -1063,16 +1066,27 @@ plot_logOR_relationship_smooth <- function( data, varname ){
   loess.DF$ymax[ loess.DF$ymax < 0.01 ] <- 0.01
   
   # Plot
+  xmin  <- min( c( 0, data$x ) )
+  xmax  <- max(data$x)
+  label <- paste0( "Proportion missing: ", round( x=prop_miss, digits=2 ) )
   p1 <- ggplot( data, aes(x=x) ) +
     geom_histogram() +
     ggtitle(varname)
+  if(add_v0){
+    p1 <- p1 + geom_vline( xintercept=0, linetype=2 )
+  }
   p2 <- ggplot( loess.DF, aes( x=x, y=y) ) +
     geom_smooth( aes_auto(loess.DF), data=loess.DF, stat="identity", col="#70AD47" ) +
     scale_y_continuous( trans="logit",
                         breaks=c( 0.01, 0.05, seq(0.1,0.9,0.1), 0.95, 0.99 ) ) +
     geom_hline( yintercept=0.01 ) +
     geom_hline( yintercept=0.99 ) +
+    geom_hline( yintercept=pcausal_na, linetype=2 ) +
+    geom_text( x=xmin + (xmax-xmin)*0.05, y=logit(0.98), label=label, hjust=0 ) +
     theme_bw()
+  if(add_v0){
+    p2 <- p2 + geom_vline( xintercept=0, linetype=2 )
+  }
   p1 + p2 + plot_layout( nrow=2, heights=c(1,3) )
 }
 
@@ -1331,18 +1345,18 @@ benchmarking_auprc <- function(bench){
   lg3 <- lg2[ !is.na(lg2$L2G) & !is.na(lg2$FLAMES) & !is.na(lg2$CALDERA) , ]
   
   # Make PR curves, extract AUPRC
-  cals_pr <- plot_mod_pr( pred_col="CALDERA", data=lg3, make_plot=FALSE )
-  calm_pr <- plot_mod_pr( pred_col="CALDERA_m", data=lg3, make_plot=FALSE )
-  l2g_pr  <- plot_mod_pr( pred_col="L2G",    data=lg3, make_plot=FALSE )
-  fla_pr  <- plot_mod_pr( pred_col="FLAMES", data=lg3, make_plot=FALSE )
-  s2g_pr  <- plot_mod_pr( pred_col="cS2G",   data=lg3, make_plot=FALSE )
+  cal_pr  <- plot_mod_pr( pred_col="CALDERA",   data=lg3, make_plot=FALSE )
+  mul_pr  <- plot_mod_pr( pred_col="CALDERA_m", data=lg3, make_plot=FALSE )
+  l2g_pr  <- plot_mod_pr( pred_col="L2G",       data=lg3, make_plot=FALSE )
+  fla_pr  <- plot_mod_pr( pred_col="FLAMES",    data=lg3, make_plot=FALSE )
+  s2g_pr  <- plot_mod_pr( pred_col="cS2G",      data=lg3, make_plot=FALSE )
   
   # Make a single PR curve with all methods
   methods <- c( "cS2G", "L2G", "FLAMES", "CALDERA" )
   plot_mod_pr( pred_col=methods, data=lg3 )
   
   # Bind AUPRCs together
-  b_pr <- rbind( cals_pr, calm_pr, fla_pr, l2g_pr, s2g_pr )
+  b_pr <- rbind( cal_pr, mul_pr, fla_pr, l2g_pr, s2g_pr )
   dimnames(b_pr)[[1]] <- c( "CALDERA", "CALDERA_m", "FLAMES", "L2G", "cS2G" )
   
   # Plots: CALDERA single
@@ -1477,7 +1491,8 @@ te$rand <- rnorm( n=NROW(te) )
 
 # Global features
 glo_cols <- c( "causal", "pops_glo", 
-               "dist_gene_glo", "dist_tss_glo",
+               "dist_gene_glo", 
+               #"dist_tss_glo",
                "coding_glo",
                "twas_glo",
                "corr_liu_glo", "corr_and_glo", "corr_uli_glo", 
@@ -1697,7 +1712,7 @@ rand_pr  <- aucpr.conf.int.expit( estimate = rand_prc$auc.integral,
 
 # Figure 1: set up
 fig_dir   <- file.path( maindir, "figures" )
-fig1_file <- file.path( fig_dir, "figure1.jpg" )
+fig1_file <- file.path( fig_dir, "Fig1.jpg" )
 dir.create( path=fig_dir, showWarnings=FALSE, recursive=TRUE )
 jpeg( filename=fig1_file, width=300*4, height=300*4, res=75*4 )
 par( mfrow=c(1,1) )
@@ -1739,7 +1754,7 @@ t.test( x=logit(bgl_glm$preds$scaled) - logit(bl_glm$preds$scaled) )
 
 # Plot
 fig_dir   <- file.path( maindir, "figures" )
-fig2_file <- file.path( fig_dir, "figure2.jpg" )
+fig2_file <- file.path( fig_dir, "Fig2.jpg" )
 jpeg( filename=fig2_file, width=750*4, height=250*4, res=75*4 )
 par( mfrow=c(1,3) )
 par( mar=c(7,5,1,1) )
@@ -1755,7 +1770,7 @@ dev.off()
 #-------------------------------------------------------------------------------
 
 # Figure 3
-fig3_file <- file.path( fig_dir, "figure3.jpg" )
+fig3_file <- file.path( fig_dir, "Fig3.jpg" )
 jpeg( filename=fig3_file, width=300*4, height=300*4, res=75*4 )
 cal_plot_logistic( .data=bgl_glm$preds, truth=causal, estimate=scaled, 
                    include_rug=FALSE, conf_level=0.95 ) + 
@@ -1810,93 +1825,71 @@ grid.arrange( p1, p2, p3, p4, ncol=2 )
 
 
 #-------------------------------------------------------------------------------
-#   Figure SX: Transformed and untransformed variable distributions
+#   Figure S1: AUPRC barplots
 #-------------------------------------------------------------------------------
 
-# Plot transformed and untransformed variables, with and without imputed values
-plot_trans <- function( var_u, var_t, flip=FALSE ){
-  
-  # Set up
-  par( mfrow = c(2,2) )
-  par( mar=c(4,4,4,1) )
-  col <- brewer.pal( n=6, name="Greens" )[5]
-  
-  # Untransformed, imputed
-  hist( tr[[var_u]], main="Untransformed, imputed", xlab="", las=1, col=col )
-  
-  # Untransformed, not imputed
-  if(flip){
-    hist( tr[[var_u]][ tr[[var_u]] < max( tr[[var_u]], na.rm=TRUE ) ], 
-          main="Untransformed, not imputed", xlab="", las=1, col=col )
-  }else{
-    hist( tr[[var_u]][ tr[[var_u]] > min( tr[[var_u]], na.rm=TRUE ) ], 
-          main="Untransformed, not imputed", xlab="", las=1, col=col )
-  }
-  
-  # Transformed, imputed
-  hist( tr[[var_t]], main="Transformed, imputed", xlab="", las=1, col=col )
-  
-  # Transformed, not imputed
-  if(flip){
-    hist( tr[[var_t]][ tr[[var_t]] < max(tr[[var_t]]) ], 
-          main="Transformed, not imputed", xlab="", las=1,col=col )
-  }else{
-    hist( tr[[var_t]][ tr[[var_t]] > min(tr[[var_t]]) ], 
-          main="Transformed, not imputed", xlab="", las=1, col=col )
-  }
-  par( mfrow = c(1,1) )
+# Set up
+fig_s1_file <- file.path( fig_dir, "FigS1.jpg" )
+jpeg( filename=fig_s1_file, width=600*4, height=250*4, res=75*4 )
+par( mfrow=c(1,3) )
+par( mar=c(7,5,1,1) )
+
+# Open Targets benchmarking set
+bar_cols <- c( brewer.pal( n=6, name="Greens" )[5], 
+               brewer.pal( n=6, name="Reds" )[4], 
+               brewer.pal( n=6, name="Blues" )[4], 
+               brewer.pal( n=6, name="Oranges"  )[3] )
+data <- lg_pr$pr[ row.names(lg_pr$pr) != "CALDERA_m" , ]
+bp <- barplot( height=data$auprc, las=2, names.arg=row.names(data),
+               ylab="AUPRC (±95% CI)", ylim=c( 0, 1 ),
+               col=bar_cols )
+for( i in seq_along(bp) ){
+  lines( x = c( bp[i],           bp[i] ), lwd=1.5,
+         y = c( data[ i, "lo" ], data[ i, "hi" ] ) )
 }
 
-# Plot
-plot_trans( var_u="corr_liu_raw_l2g", var_t="corr_liu_glo" )
-plot_trans( var_u="clpp_raw_l2g", var_t="clpp_glo" )
-plot_trans( var_u="abc_raw_l2g", var_t="abc_glo" )
-plot_trans( var_u="smr_raw_l2g", var_t="smr_glo", flip=TRUE )
-plot_trans( var_u="distance_genebody", var_t="dist_gene_glo", flip=TRUE )
-plot_trans( var_u="distance_tss", var_t="dist_tss_glo", flip=TRUE )
+# ExWAS benchmarking set
+data <- ex_pr$pr[ row.names(ex_pr$pr) != "CALDERA_m" , ]
+bp <- barplot( height=data$auprc, las=2, names.arg=row.names(data),
+               ylab="AUPRC (±95% CI)", ylim=c( 0, 1 ),
+               col=bar_cols )
+for( i in seq_along(bp) ){
+  lines( x = c( bp[i],           bp[i] ), lwd=1.5,
+         y = c( data[ i, "lo" ], data[ i, "hi" ] ) )
+}
 
+# Three molecular traits benchmarking set
+data <- mt_pr$pr[ row.names(mt_pr$pr) != "CALDERA_m" , ]
+bp <- barplot( height=data$auprc, las=2, names.arg=row.names(data),
+               ylab="AUPRC (±95% CI)", ylim=c( 0, 1 ),
+               col=bar_cols )
+for( i in seq_along(bp) ){
+  lines( x = c( bp[i],           bp[i] ), lwd=1.5,
+         y = c( data[ i, "lo" ], data[ i, "hi" ] ) )
+}
 
-#-------------------------------------------------------------------------------
-#   Figure S1: Prediction comparisons across the evolution of CALDERA
-#-------------------------------------------------------------------------------
-
-# Get set up
-fig_s1_file <- file.path( fig_dir, "figure_s1.jpg" )
-jpeg( filename=fig_s1_file, width=200*4, height=600*4, res=75*4 )
-par( mar=c(5,5,1,1) )
-par( mfrow=c(3,1) )
-
-# How do predictions compare for XGBoost and LASSO using the full feature set?
-plot( fl_xgb$preds$pred, fl_las$preds$pred, las=1, lwd=1.5,
-      col=brewer.pal( n=6, name="Greens" )[5],
-      xlab="XGBoost (full)", ylab="LASSO (full)" )
-abline( a=0, b=1, lty=2, lwd=2 )
-
-# How do predictions compare for LASSO full v. basic?
-plot( fl_las$preds$pred, bl_las$preds$pred, las=1, lwd=1.5,
-      col=brewer.pal( n=6, name="Greens" )[5], 
-      xlab="LASSO (full)", ylab="LASSO (basic)" )
-abline( a=0, b=1, lty=2, lwd=2 )
-
-# How do predictions compare for LASSO basic v. CALDERA?
-plot( bl_las$preds$pred, bgl_las$preds$recal, las=1, lwd=1.5,
-      col=brewer.pal( n=6, name="Greens" )[5], 
-      xlab="LASSO (basic)", ylab="CALDERA" )
-abline( a=0, b=1, lty=2, lwd=2 )
+# Wrap up
+par( mfrow=c(1,1) )
 dev.off()
 
-# Large LASSO (full) predictions that are small XGBoost (full) predictions
-idx <- fl_xgb$preds$pred < 0.7 & fl_las$preds$pred > 0.9
-tr[idx,]
+# Two-sample z-test: Open Targets
+two_sample_z_test( mean1 = lg_pr$pr[ "CALDERA", "auprc_logit" ], 
+                   mean2 = lg_pr$pr[ "L2G",       "auprc_logit" ], 
+                   se1   = lg_pr$pr[ "CALDERA", "se_logit" ], 
+                   se2   = lg_pr$pr[ "L2G",       "se_logit" ] )
+two_sample_z_test( mean1 = lg_pr$pr[ "CALDERA", "auprc_logit" ], 
+                   mean2 = lg_pr$pr[ "FLAMES",    "auprc_logit" ], 
+                   se1   = lg_pr$pr[ "CALDERA", "se_logit" ], 
+                   se2   = lg_pr$pr[ "FLAMES",    "se_logit" ] )
 
 
 #-------------------------------------------------------------------------------
-#   Figure SX: P(causal) v. feature group
+#   Figure S2: P(causal) v. feature group
 #-------------------------------------------------------------------------------
 
 # POPS
 bins <- 30
-fig2a_file <- file.path( fig_dir, "figure2a.jpg" )
+fig2a_file <- file.path( fig_dir, "FigS2a.jpg" )
 jpeg( filename=fig2a_file, width=300*4, height=400*4, res=75*4 )
 plot_logOR_relationship_model( data=tr, model=bg_glm, focal_var="pops_glo", 
                                qmin=0.05, qmax=0.95, bins=bins, 
@@ -1904,7 +1897,7 @@ plot_logOR_relationship_model( data=tr, model=bg_glm, focal_var="pops_glo",
 dev.off()
 
 # Distance
-fig2b_file <- file.path( fig_dir, "figure2b.jpg" )
+fig2b_file <- file.path( fig_dir, "FigS2b.jpg" )
 jpeg( filename=fig2b_file, width=300*4, height=400*4, res=75*4 )
 plot_logOR_relationship_model( data=tr, model=bg_glm, focal_var="dist_gene_glo", 
                                qmin=0.05, qmax=0.95, bins=bins,
@@ -1912,7 +1905,7 @@ plot_logOR_relationship_model( data=tr, model=bg_glm, focal_var="dist_gene_glo",
 dev.off()
 
 # Coding PIP
-fig2c_file <- file.path( fig_dir, "figure2c.jpg" )
+fig2c_file <- file.path( fig_dir, "FigS2c.jpg" )
 jpeg( filename=fig2c_file, width=300*4, height=400*4, res=75*4 )
 plot_logOR_relationship_model( data=tr, model=bg_glm, focal_var="coding_glo",
                                qmin=0, qmax=1, bins=bins, 
@@ -1920,7 +1913,7 @@ plot_logOR_relationship_model( data=tr, model=bg_glm, focal_var="coding_glo",
 dev.off()
 
 # Number of genes
-fig2d_file <- file.path( fig_dir, "figure2d.jpg" )
+fig2d_file <- file.path( fig_dir, "Fig2d.jpg" )
 jpeg( filename=fig2d_file, width=300*4, height=400*4, res=75*4 )
 plot_logOR_relationship_model( data=tr, model=bg_glm, 
                                focal_var="prior_n_genes_locus",
@@ -1950,65 +1943,149 @@ dev.off()
 
 
 #-------------------------------------------------------------------------------
-#   Figure SX: AUPRC barplots
+#   Figure SX: distance vs. P(causal) before and after transformation
 #-------------------------------------------------------------------------------
 
-# Set up
-nc_fig_dir   <- file.path( maindir, "figures", "nature_communications" )
-nc_fig5_file <- file.path( nc_fig_dir, "figure5.jpg" )
-jpeg( filename=nc_fig5_file, width=600*4, height=300*4, res=75*4 )
-par( mfrow=c(1,3) )
-par( mar=c(7,5,1,1) )
-
-# Open Targets benchmarking set
-bar_cols <- c( brewer.pal( n=6, name="Greens" )[5], 
-               brewer.pal( n=6, name="Greens" )[4], 
-               brewer.pal( n=6, name="Reds" )[4], 
-               brewer.pal( n=6, name="Blues" )[4], 
-               brewer.pal( n=6, name="Oranges"  )[3] )
-bp <- barplot( height=lg_pr$pr[,"auprc"], las=2, names.arg=row.names(lg_pr$pr),
-               ylab="AUPRC (±95% CI)", ylim=c( 0, 1 ),
-               col=bar_cols )
-for( i in seq_along(bp) ){
-  lines( x = c( bp[i],               bp[i] ), lwd=1.5,
-         y = c( lg_pr$pr[ i, "lo" ], lg_pr$pr[ i, "hi" ] ) )
-}
-
-# ExWAS benchmarking set
-bp <- barplot( height=ex_pr$pr[,"auprc"], las=2, names.arg=row.names(lg_pr$pr),
-               ylab="AUPRC (±95% CI)", ylim=c( 0, 1 ),
-               col=bar_cols )
-for( i in seq_along(bp) ){
-  lines( x = c( bp[i],               bp[i] ), lwd=1.5,
-         y = c( ex_pr$pr[ i, "lo" ], ex_pr$pr[ i, "hi" ] ) )
-}
-
-# Three molecular traits benchmarking set
-bp <- barplot( height=mt_pr$pr[,"auprc"], las=2, names.arg=row.names(lg_pr$pr),
-               ylab="AUPRC (±95% CI)", ylim=c( 0, 1 ),
-               col=bar_cols )
-for( i in seq_along(bp) ){
-  lines( x = c( bp[i],               bp[i] ), lwd=1.5,
-         y = c( mt_pr$pr[ i, "lo" ], mt_pr$pr[ i, "hi" ] ) )
-}
-
-# Wrap up
-par( mfrow=c(1,1) )
+# Distance body, before
+fig_s1a_file <- file.path( fig_dir, "FigS1a.jpg" )
+jpeg( filename=fig_s1a_file, width=300*4, height=400*4, res=75*4 )
+plot_logOR_relationship_smooth( data=tr, varname="distance_genebody" )
 dev.off()
 
-# Two-sample z-test: Open Targets
-two_sample_z_test( mean1 = lg_pr$pr[ "CALDERA", "auprc_logit" ], 
-                   mean2 = lg_pr$pr[ "L2G",       "auprc_logit" ], 
-                   se1   = lg_pr$pr[ "CALDERA", "se_logit" ], 
-                   se2   = lg_pr$pr[ "L2G",       "se_logit" ] )
-two_sample_z_test( mean1 = lg_pr$pr[ "CALDERA", "auprc_logit" ], 
-                   mean2 = lg_pr$pr[ "FLAMES",    "auprc_logit" ], 
-                   se1   = lg_pr$pr[ "CALDERA", "se_logit" ], 
-                   se2   = lg_pr$pr[ "FLAMES",    "se_logit" ] )
+# Distance body, after
+fig_s1b_file <- file.path( fig_dir, "FigS1b.jpg" )
+jpeg( filename=fig_s1b_file, width=300*4, height=400*4, res=75*4 )
+plot_logOR_relationship_smooth( data=tr, varname="dist_gene_glo", add_v0=FALSE )
+dev.off()
+
+# TSS
+plot_logOR_relationship_smooth( data=tr, varname="distance_tss" )
+plot_logOR_relationship_smooth( data=tr, varname="dist_tss_glo", add_v0=FALSE )
+
+# Roadmap enhancer length
+plot_logOR_relationship_smooth( data=tr, varname="Roadmap_length_per_type" )
+plot_logOR_relationship_smooth( data=tr, varname="roadmap_bp_log10", add_v0=FALSE )
+
+# Coding sequence length
+plot_logOR_relationship_smooth( data=tr, varname="CDS_length" )
+plot_logOR_relationship_smooth( data=tr, varname="cds_bp_log10", add_v0=FALSE )
+
+# Plot relationship: TWAS
+plot_logOR_relationship_smooth( data=tr, varname="twas_abs_z" )
+
+# Plot relationship: CLPP
+plot_logOR_relationship_smooth( data=tr, varname="clpp_prob" )
+
+# Plot relationship: ABC
+plot_logOR_relationship_smooth( data=tr, varname="abc_score" )
+
+# Plot relationship: SMR
+plot_logOR_relationship_smooth( data=tr, varname="smr_z" )
+
+# Plot relationship: PCHi-C Jung
+plot_logOR_relationship_smooth( data=tr, varname="pchic_jung_score" )
+
+# Plot relationship: PCHi-C Javierre
+plot_logOR_relationship_smooth( data=tr, varname="pchic_javierre_score" )
+
+# Plot relationship: E-P Liu
+plot_logOR_relationship_smooth( data=tr, varname="corr_liu_score" )
+
+# Plot relationship: E-P Andersson
+plot_logOR_relationship_smooth( data=tr, varname="corr_andersson_score" )
+
+# Plot relationship: E-P Ulirsch
+plot_logOR_relationship_smooth( data=tr, varname="corr_ulirsch_score" )
+
+# DEPICT
+plot_logOR_relationship_smooth( data=tr, varname="depict_z" )
+
+# NetWAS
+plot_logOR_relationship_smooth( data=tr, varname="no_loco_nc_netwas_score" )
+
+# NetWAS Bonferroni
+plot_logOR_relationship_smooth( data=tr, varname="no_loco_nc_netwas_bon_score" )
+
+# pLI
+plot_logOR_relationship_smooth( data=tr, varname="pLI" )
 
 
 #-------------------------------------------------------------------------------
-#   Figure S2: Calibration of CALDERA and L2G in external gold standards
+#   Figure SX: Transformed and untransformed variable distributions
+#-------------------------------------------------------------------------------
+
+# Plot transformed and untransformed variables, with and without imputed values
+plot_trans <- function( var_u, var_t, flip=FALSE ){
+  
+  # Set up
+  par( mfrow = c(2,1) )
+  par( mar=c(4,4,4,1) )
+  col <- brewer.pal( n=6, name="Greens" )[5]
+  
+  # Untransformed
+  hist( tr[[var_u]][ !is.na( tr[[var_u]] ) ], 
+        main="Untransformed", xlab="", las=1, col=col )
+  
+  # Transformed
+  hist( tr[[var_t]][ !is.na( tr[[var_u]] ) ], 
+        main="Transformed", xlab="", las=1,col=col )
+  par( mfrow = c(1,1) )
+}
+
+# Plot
+plot_trans( var_u="corr_liu_score", var_t="corr_liu_glo" )
+plot_trans( var_u="clpp_prob", var_t="clpp_glo" )
+plot_trans( var_u="abc_score", var_t="abc_glo" )
+plot_trans( var_u="smr_p", var_t="smr_glo", flip=TRUE )
+plot_trans( var_u="distance_genebody", var_t="dist_gene_glo", flip=TRUE )
+plot_trans( var_u="distance_tss", var_t="dist_tss_glo", flip=TRUE )
+
+hist(tr$pops_score)
+hist(tr$coding_prob)
+hist(tr$corr_andersson_score)
+hist(tr$corr_ulirsch_score)
+hist(tr$pchic_jung_score)
+hist(tr$pchic_javierre_score)
+hist(tr$depict_z_glo)
+hist(tr$netwas_score_glo)
+hist(tr$netwas_bon_score_glo)
+
+#-------------------------------------------------------------------------------
+#   Figure SX: Prediction comparisons across the evolution of CALDERA
+#-------------------------------------------------------------------------------
+
+# Get set up
+fig_s1_file <- file.path( fig_dir, "FigS1.jpg" )
+jpeg( filename=fig_s1_file, width=200*4, height=600*4, res=75*4 )
+par( mar=c(5,5,1,1) )
+par( mfrow=c(3,1) )
+
+# How do predictions compare for XGBoost and LASSO using the full feature set?
+plot( fl_xgb$preds$pred, fl_las$preds$pred, las=1, lwd=1.5,
+      col=brewer.pal( n=6, name="Greens" )[5],
+      xlab="XGBoost (full)", ylab="LASSO (full)" )
+abline( a=0, b=1, lty=2, lwd=2 )
+
+# How do predictions compare for LASSO full v. basic?
+plot( fl_las$preds$pred, bl_las$preds$pred, las=1, lwd=1.5,
+      col=brewer.pal( n=6, name="Greens" )[5], 
+      xlab="LASSO (full)", ylab="LASSO (basic)" )
+abline( a=0, b=1, lty=2, lwd=2 )
+
+# How do predictions compare for LASSO basic v. CALDERA?
+plot( bl_las$preds$pred, bgl_las$preds$recal, las=1, lwd=1.5,
+      col=brewer.pal( n=6, name="Greens" )[5], 
+      xlab="LASSO (basic)", ylab="CALDERA" )
+abline( a=0, b=1, lty=2, lwd=2 )
+dev.off()
+
+# Large LASSO (full) predictions that are small XGBoost (full) predictions
+idx <- fl_xgb$preds$pred < 0.7 & fl_las$preds$pred > 0.9
+tr[idx,]
+
+
+#-------------------------------------------------------------------------------
+#   Figure SX: Calibration of CALDERA and L2G in external gold standards
 #-------------------------------------------------------------------------------
 
 fig_s2_file <- file.path( fig_dir, "figure_s2.jpg" )
@@ -2018,7 +2095,7 @@ dev.off()
 
 
 #-------------------------------------------------------------------------------
-#   Figure S5?: CALDERA precision-recall curve versus NG+TP
+#   Figure SX?: CALDERA precision-recall curve versus NG+TP
 #-------------------------------------------------------------------------------
 
 # Precision and recall: POPS + nearest gene
@@ -2051,6 +2128,26 @@ points( x=pnn_r,         y=pnn_p,            pch=19, cex=1.5,
         col=brewer.pal( n=4, name="Blues" )[3] )
 # better_pr( p=pnn_p, r=pnn_r, t=0.75 )
 dev.off()
+
+
+#-------------------------------------------------------------------------------
+#   Table S1
+#-------------------------------------------------------------------------------
+
+# Read in Weeks et al. data, subset to our traits and columns
+it0 <- fread("~/projects/causal_genes/weeks2023_table_s1.csv")
+it  <- it0[ it0$Trait %in% unique(tr$trait) , 
+            c( "Trait", "Description", "N individuals", "N cases", "N controls" ) ]
+
+# Add number of causal/non-causal genes
+it$`N causal genes` <- tapply( X=tr$causal, INDEX=tr$trait, FUN=sum )
+it$`N non-causal genes` <- tapply( X=!tr$causal, INDEX=tr$trait, FUN=sum )
+
+# Write
+tab_dir <- file.path( maindir, "tables")
+tab_s1_file <- file.path( tab_dir, "table_s1.tsv" )
+dir.create( path=tab_dir, showWarnings=FALSE, recursive=TRUE )
+fwrite( x=it, file=tab_s1_file, sep="\t" )
 
 
 #-------------------------------------------------------------------------------
@@ -2493,125 +2590,6 @@ legend( "topleft", legend=paste( "Roadmap count:", c( "10th", "50th", "90th" ) )
 
 #-------------------------------------------------------------------------------
 #///////////////////////////////////////////////////////////////////////////////
-#   Full: GLM + XGB
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# Run regression
-f_form <- make_formula( lhs=f_cols[1], rhs=f_cols[-1] )
-f_glm  <- glm( formula=f_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_f_glm <- dev_exp(f_glm)
-
-
-#-------------------------------------------------------------------------------
-#   XGBoost
-#-------------------------------------------------------------------------------
-
-# Run
-t0 <- proc.time()
-f_xgb <- train_xgb( data=tr, feat_cols=f_cols[-1], maxit=100 )
-plot_fi(f_xgb)
-t1 <- proc.time()
-t1-t0
-
-
-#-------------------------------------------------------------------------------
-#   Assess performance of the models in the test set
-#-------------------------------------------------------------------------------
-
-# AUPRC
-f_pr <- auprc_test_set( test_df  = te, 
-                        rand_mod = rand_mod,
-                        glm_mod  = f_glm, 
-                        las_mod  = f_las, 
-                        xgb_mod  = f_xgb, 
-                        ymax     = 1 )
-
-# PR curves
-plot_pr( model=f_glm, test_df=te )
-plot_pr( model=f_xgb, test_df=te )
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Basic + GLC: GLM
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-#   GLM
-#-------------------------------------------------------------------------------
-
-# Run regression
-bg_form <- make_formula( lhs=bg_cols[1], rhs=bg_cols[-1] )
-bg_glm0 <- glm( formula=bg_form, data=tr, family="binomial" )
-bg_glm  <- stats::step( object=bg_glm0, k=qchisq( 1-0.05/5, df=1 ) )
-
-# Extract deviance explained
-dev_exp( model=bg_glm, in_sample=TRUE  ) / dev_exp( model=fg_glm, in_sample=TRUE  )
-dev_exp( model=bg_glm, in_sample=FALSE ) / dev_exp( model=fg_glm, in_sample=FALSE )
-
-# Forest plot
-glm_to_forest_p( mod=bg_glm, xmax=NULL )
-glm_to_forest(   mod=bg_glm, suffix="", standardize=FALSE )
-glm_to_forest(   mod=bg_glm, suffix="", standardize=TRUE )
-
-
-#-------------------------------------------------------------------------------
-#   XGBoost
-#-------------------------------------------------------------------------------
-
-bg_xgb <- train_xgb( data=tr, feat_cols=bg_cols[-1], maxit=500, 
-                     bias_cols=bias_cols )
-xgb_to_forest( xgb_mod=bg_xgb, suffix="", xmax=NULL )
-plot_fi(bg_xgb)
-
-
-#-------------------------------------------------------------------------------
-#   Assess performance of the models in the test set
-#-------------------------------------------------------------------------------
-
-# AUPRC: REMOVE gene-level covariates
-b_pr1 <- auprc_test_set( test_df   = te, 
-                         rand_mod  = rand_mod,
-                         glm_mod   = bg_glm, 
-                         las_mod   = bg_las, 
-                         xgb_mod   = bg_xgb1, 
-                         ymax      = 1, 
-                         bias_cols = bias_cols, 
-                         glc_cols  = glc_cols,
-                         rm_glc    = TRUE )
-fg_pr1; b_pr1; b_pr1/fg_pr1
-og_pr1; b_pr1; b_pr1/og_pr1
-
-# AUPRC: KEEP gene-level covariates
-b_pr2 <- auprc_test_set( test_df   = te, 
-                         rand_mod  = rand_mod,
-                         glm_mod   = bg_glm, 
-                         las_mod   = bg_las, 
-                         xgb_mod   = bg_xgb2, 
-                         ymax      = 1, 
-                         bias_cols = bias_cols )
-fg_pr2; b_pr2; b_pr2/fg_pr2
-og_pr2; b_pr2; b_pr2/og_pr2
-
-# PR curves: REMOVE gene-level covariates
-plot_pr( model=bg_glm,  test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-plot_pr( model=bg_xgb1, test_df=te, bias_cols=bias_cols, glc_cols=glc_cols, rm_glc=TRUE )
-
-# PR curves: KEEP gene-level covariates
-plot_pr( model=bg_glm,  test_df=te, bias_cols=bias_cols )
-plot_pr( model=bg_xgb2, test_df=te, bias_cols=bias_cols )
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
 #   POPS + local
 #///////////////////////////////////////////////////////////////////////////////
 #-------------------------------------------------------------------------------
@@ -2633,50 +2611,6 @@ pnl_r <- sum( tr$causal & tr$pops_and_local ) / sum( tr$causal )         #recall
 # Precision and recall: test
 sum( te$causal & te$pops_and_local ) / sum( te$pops_and_local ) #precision
 sum( te$causal & te$pops_and_local ) / sum( te$causal )         #recall
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   Published best-in-locus
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-# Run a naive regression using published best-in-locus
-p_cols <- c( "causal", "pops_bil", "dist_gene_bil", "magma_bil", "twas_bil", 
-             "clpp_bil", "abc_bil", "corr_any_bil", "pchic_any_bil", "smr_bil" )
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..p_cols ][,-1] ), order="hclust" )
-
-# Run regression
-p_form <- make_formula( lhs=p_cols[1], rhs=p_cols[-1] )
-p_glm  <- glm( formula=p_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_p_glm <- dev_exp(p_glm)
-
-# Forest plot
-glm_to_forest(p_glm)
-
-
-#-------------------------------------------------------------------------------
-#///////////////////////////////////////////////////////////////////////////////
-#   All best-in-locus (only)
-#///////////////////////////////////////////////////////////////////////////////
-#-------------------------------------------------------------------------------
-
-# Raw feature correlations
-corrplot( cor( tr[ , ..a_cols ][,-1] ), order="hclust" )
-
-# Run regression
-a_form <- make_formula( lhs=a_cols[1], rhs=a_cols[-1] )
-a_glm  <- glm( formula=a_form, data=tr, family="binomial" )
-
-# Extract deviance explained
-devexp_a_glm <- dev_exp(a_glm)
-
-# Forest plot
-glm_to_forest_p( mod=a_glm, suffix="_bilTRUE" )
 
 
 #-------------------------------------------------------------------------------
@@ -2703,73 +2637,84 @@ plot_logOR_relationship_smooth( data=tr, varname="dist_tss_glo" )
 plot_logOR_relationship_smooth( data=tr, varname="pops_glo" )
 
 # Plot relationship: TWAS
-plot_logOR_relationship_smooth( data=tr, varname="twas_logp_glo" )
+mean( tr$causal[ is.na(tr$twas_z) ])
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$twas_abs_z) , ], varname="twas_abs_z" )
 plot_logOR_relationship_smooth( data=tr, varname="twas_glo" )
 
 # Plot relationship: E-P Liu
-plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_raw_l2g > min(tr$corr_liu_raw_l2g) , ], 
-                                varname="corr_liu_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr, varname="corr_liu_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr[ tr$corr_liu_glo > min(tr$corr_liu_glo) , ], 
-                                varname="corr_liu_glo" )
+mean( tr$causal[ is.na(tr$corr_liu_score) ])
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$corr_liu_score) , ], 
+                                varname="corr_liu_score" )
 plot_logOR_relationship_smooth( data=tr, varname="corr_liu_glo" )
 
 # Plot relationship: E-P Andersson
-plot_logOR_relationship_smooth( data=tr[ tr$corr_and_glo > 0 , ], 
-                                varname="corr_and_glo" )
+mean( tr$causal[ is.na(tr$corr_andersson_score) ] )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$corr_andersson_score) , ], 
+                                varname="corr_andersson_score" )
 plot_logOR_relationship_smooth( data=tr, varname="corr_and_glo" )
 
 # Plot relationship: E-P Ulirsch
-plot_logOR_relationship_smooth( data=tr[ tr$corr_uli_glo > 0 , ], 
-                                varname="corr_uli_glo" )
+mean( tr$causal[ is.na(tr$corr_ulirsch_score) ] )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$corr_ulirsch_score) , ], 
+                                varname="corr_ulirsch_score" )
 plot_logOR_relationship_smooth( data=tr, varname="corr_uli_glo" )
 
 # Plot relationship: PCHi-C Jung
-plot_logOR_relationship_smooth( data=tr[ tr$pchic_jung_glo > 0 , ], 
-                                varname="pchic_jung_glo" )
+mean( tr$causal[ is.na(tr$pchic_jung_score) ] )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$pchic_jung_score) , ], 
+                                varname="pchic_jung_score" )
 plot_logOR_relationship_smooth( data=tr, varname="pchic_jung_glo" )
 
 # Plot relationship: PCHi-C Javierre
-plot_logOR_relationship_smooth( data=tr[ tr$pchic_jav_glo > 0 , ], 
-                                varname="pchic_jav_glo" )
+mean( tr$causal[ is.na(tr$pchic_javierre_score) ] )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$pchic_javierre_score) , ], 
+                                varname="pchic_javierre_score" )
 plot_logOR_relationship_smooth( data=tr, varname="pchic_jav_glo" )
 
 # Plot relationship: CLPP
-plot_logOR_relationship_smooth( data=tr[ tr$clpp_raw_l2g > 0 , ], 
-                                varname="clpp_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr, varname="clpp_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr[ tr$clpp_glo > min(tr$clpp_glo) , ], 
-                                varname="clpp_glo" )
+mean( tr$causal[ is.na(tr$clpp_prob) ] )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$clpp_prob) , ], 
+                                varname="clpp_prob" )
 plot_logOR_relationship_smooth( data=tr, varname="clpp_glo" )
 
 # Plot relationship: ABC
-plot_logOR_relationship_smooth( data=tr[ tr$abc_raw_l2g > 0 , ], 
-                                varname="abc_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr, varname="abc_raw_l2g" )
-plot_logOR_relationship_smooth( data=tr[ tr$abc_raw_l2g > 0 , ], 
-                                varname="abc_glo" )
+mean( tr$causal[ is.na(tr$abc_score) ] )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$abc_score) , ], 
+                                varname="abc_score" )
 plot_logOR_relationship_smooth( data=tr, varname="abc_glo" )
 
 # Plot relationship: MAGMA
+mean( tr$causal[ is.na(tr$magma_score) ] )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$magma_score) , ], 
+                                varname="magma_score" )
 plot_logOR_relationship_smooth( data=tr, varname="magma_glo" )
-plot_logOR_relationship_smooth( data=tr[ tr$magma_glo != median(tr$magma_glo) , ], 
-                                varname="magma_glo" )
 
 # Plot relationship: SMR
+mean( tr$causal[ is.na(tr$smr_z) ] )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$smr_z) , ], varname="smr_z" )
 plot_logOR_relationship_smooth( data=tr, varname="smr_glo" )
-plot_logOR_relationship_smooth( data=tr[ tr$smr_glo != median(tr$smr_glo) , ], 
-                                varname="smr_glo" )
 
 # Plot relationship: coding
+mean( tr$causal[ is.na(tr$coding_prob) ] )
 plot_logOR_relationship_smooth( data=tr[ !is.na(tr$coding_prob) , ], varname="coding_prob" )
 plot_logOR_relationship_smooth( data=tr, varname="coding_glo" )
-plot_logOR_relationship_smooth( data=tr[ tr$coding_glo != min(tr$coding_glo) , ], 
-                                varname="coding_glo" )
 
 # DEPICT and NetWAS
+mean( tr$causal[ is.na(tr$depict_z) ] )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$depict_z) , ], 
+                                varname="depict_z" )
 plot_logOR_relationship_smooth( data=tr, varname="depict_z_glo" )
-plot_logOR_relationship_smooth( data=tr[ tr$depict_z_glo > 0 , ], varname="depict_z_glo" )
+
+# NetWAS
+mean( tr$causal[ is.na(tr$no_loco_nc_netwas_score) ] )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$no_loco_nc_netwas_score) , ], 
+                                varname="no_loco_nc_netwas_score" )
 plot_logOR_relationship_smooth( data=tr, varname="netwas_score_glo" )
+
+# NetWAS Bonferroni
+mean( tr$causal[ is.na(tr$no_loco_nc_netwas_bon_score) ] )
+plot_logOR_relationship_smooth( data=tr[ !is.na(tr$no_loco_nc_netwas_bon_score) , ], 
+                                varname="no_loco_nc_netwas_bon_score" )
 plot_logOR_relationship_smooth( data=tr, varname="netwas_bon_score_glo" )
 
 
