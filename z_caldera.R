@@ -131,7 +131,7 @@ caldera <- function( pops_file, cs_file, caldera_path ){
     sub$dist   <- ifelse( sub$dist_s < sub$dist_e, sub$dist_s, sub$dist_e)
     sub$dist[ loci$bp[i] > sub$START & loci$bp[i] < sub$END ] <- 0
     if( NROW(sub) > 0 ){
-      genes0[[i]] <- data.table( locus=i, locus_pos=loci$locus_pos[ loci$locus == i ], 
+      genes0[[i]] <- data.table( locus=loci$locus[i], locus_pos=loci$locus_pos[ loci$locus == i ], 
                                  gene=sub$NAME, ensgid=sub$ENSGID, 
                                  n_genes=NROW(sub), dist=sub$dist )
     }
@@ -166,8 +166,16 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   
   # Aggregate PIPs across loci and genes
   cs2 <- cs[ !is.na(cs$c_gene) & cs$c_gene != "" , ]
-  cs3 <- aggregate( x=cs2$pip, by=list( locus=cs2$locus, ensgid=cs2$c_gene ), FUN=sum )
-  names(cs3)[3] <- "coding_glo"
+  if( NROW(cs2) > 0 ){
+    cs3 <- aggregate( x=cs2$pip, by=list( locus=cs2$locus, ensgid=cs2$c_gene ), FUN=sum )
+    names(cs3)[3] <- "coding_glo"
+  }else{
+    if( class(cs$locus) == "character" ){
+      cs3 <- data.table( locus=character(), ensgid=character(), coding_glo=numeric() )
+    }else{
+      cs3 <- data.table( locus=integer(), ensgid=character(), coding_glo=numeric() )
+    }
+  }
   
   # Decorate with coding PIP
   genes <- left_join( x=genes, y=cs3, by=c( "locus", "ensgid" ) )
