@@ -8,7 +8,7 @@ This repo contains everything needed to run CALDERA given: 1) a PoPS output file
 ## How to run CALDERA
 First, clone this repo
 ```
-git clone https://github.com/bulik/ldsc.git
+git clone https://github.com/kheilbron/caldera.git
 ```
 
 Second, open an R session and source the z_caldera.R script
