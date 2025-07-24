@@ -1,7 +1,7 @@
 # CALDERA (Calling disease-related genes)
 
 ## General overview
-CALDERA is a tool for identifying causal genes in GWAS loci. Many alternative tools (*e.g.*, L2G, Ei, FLAMES) use complex XGBoost models with >45 predictive features. CALDERA achieves similar or better performance despite using a simple logistic regression model with only 4 features and three covariates. This makes it much easier to understand why CALDERA chooses the genes that it does. Unlike other methods, CALDERA attempts for potential biases in its ground truth training data. Full details can be found in the [preprint](https://www.medrxiv.org/content/10.1101/2024.07.26.24311057v1).
+CALDERA is a tool for identifying causal genes in GWAS loci. Many alternative tools (*e.g.*, L2G, Ei, FLAMES) use complex XGBoost models with >45 predictive features. CALDERA achieves similar or better performance despite using a simple logistic regression model with only 4 features and three covariates. This makes it much easier to understand why CALDERA chooses the genes that it does. Unlike other methods, CALDERA attempts for potential biases in its ground truth training data. Full details can be found in the [preprint](https://www.medrxiv.org/content/10.1101/2024.07.26.24311057v2).
 
 This repo contains everything needed to run CALDERA given: 1) a PoPS output file, and 2) a file containing credible set information.
 
