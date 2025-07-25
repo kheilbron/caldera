@@ -165,21 +165,16 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   }
   
   # Aggregate PIPs across loci and genes
+  # Decorate with coding PIP
   cs2 <- cs[ !is.na(cs$c_gene) & cs$c_gene != "" , ]
   if( NROW(cs2) > 0 ){
     cs3 <- aggregate( x=cs2$pip, by=list( locus=cs2$locus, ensgid=cs2$c_gene ), FUN=sum )
     names(cs3)[3] <- "coding_glo"
+    genes <- left_join( x=genes, y=cs3, by=c( "locus", "ensgid" ) )
+    genes$coding_glo[ is.na(genes$coding_glo) ] <- 0
   }else{
-    if( class(cs$locus) == "character" ){
-      cs3 <- data.table( locus=character(), ensgid=character(), coding_glo=numeric() )
-    }else{
-      cs3 <- data.table( locus=integer(), ensgid=character(), coding_glo=numeric() )
-    }
+    genes$coding_glo <- 0
   }
-  
-  # Decorate with coding PIP
-  genes <- left_join( x=genes, y=cs3, by=c( "locus", "ensgid" ) )
-  genes$coding_glo[ is.na(genes$coding_glo) ] <- 0
   
   # Add prior
   genes$prior_n_genes_locus <- logit10( 1/genes$n_genes )
