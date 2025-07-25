@@ -105,6 +105,7 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   #-----------------------------------------------------------------------------
   
   # Define locus boundaries
+  message2("Define locus boundaries")
   loci0 <- list()
   window <- 3e5
   for( i in unique(cs$locus) ){
@@ -119,8 +120,10 @@ caldera <- function( pops_file, cs_file, caldera_path ){
                              bp_min=bp_min, bp_max=bp_max )
   }
   loci <- do.call( rbind, loci0 )
+  message2( "The dataset contains ", NROW(loci), " loci" )
   
   # Find all genes in each GWAS locus and their distance to the GWAS hit
+  message2("Find all genes in each GWAS locus and their distance to the GWAS hit")
   genes0 <- list()
   for( i in seq_along(loci$locus) ){
     sub <- gen[ gen$CHR  == loci$chr[i] & 
@@ -137,6 +140,7 @@ caldera <- function( pops_file, cs_file, caldera_path ){
     }
   }
   genes <- do.call( rbind, genes0 )
+  message2( "There are ", NROW(genes), " genes in these loci" )
   
   
   #-----------------------------------------------------------------------------
@@ -144,9 +148,11 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   #-----------------------------------------------------------------------------
   
   # Transform distance
+  message2("Transform distance")
   genes$dist_gene_glo <- -log10( genes$dist + 1e3 )
   
-  # Decorate these genes with their POPS scores
+  # Decorate genes with their POPS scores
+  message2("Decorate genes with their POPS scores")
   genes$pops_glo <- pop$PoPS_Score[ match( genes$ensgid, pop$ENSGID ) ]
   genes$pops_glo[ is.na(genes$pops_glo) ] <- 0
   
@@ -154,8 +160,10 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   if( !( "c_gene" %in% names(cs) ) ){
     
     if( "rsid" %in% names(cs) ){                            # Using rsID
+      message2("Annotate coding CS variants using rsID")
       cs$c_gene <- cod$ensgid[ match( cs$rsid, cod$SNP ) ]
     }else{                                                 # Using chr and pos
+      message2("Annotate coding CS variants using chromosome and position")
       bcols <- c( "CHR", "BP", "ensgid" )
       ccols <- c( "chr", "bp", "c_gene" )
       cod2 <- cod[ , ..bcols ]
@@ -164,8 +172,8 @@ caldera <- function( pops_file, cs_file, caldera_path ){
     }
   }
   
-  # Aggregate PIPs across loci and genes
-  # Decorate with coding PIP
+  # Decorate genes with their coding PIP
+  message2("Decorate genes with their coding PIP")
   cs2 <- cs[ !is.na(cs$c_gene) & cs$c_gene != "" , ]
   if( NROW(cs2) > 0 ){
     cs3 <- aggregate( x=cs2$pip, by=list( locus=cs2$locus, ensgid=cs2$c_gene ), FUN=sum )
@@ -177,6 +185,7 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   }
   
   # Add prior
+  message2("Add prior")
   genes$prior_n_genes_locus <- logit10( 1/genes$n_genes )
   genes$prior_n_genes_locus[ genes$n_genes < 2 ] <- logit10(0.75)
   
@@ -185,6 +194,7 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   #   Add covariates
   #-----------------------------------------------------------------------------
   
+  message2("Add covariates")
   for( i in names(cov_means) ){
     genes[[i]] <- cov_means[i]
   }
@@ -194,7 +204,8 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   #   Get raw and normalized predictions
   #-----------------------------------------------------------------------------
   
-  # Loop through loci, assign values needed for recalibration
+  # Loop through loci
+  message2("Get raw and normalized predictions")
   genes$raw <- predict( object=cal_mod, newdata=genes, type="response" )
   genes$caldera <- as.numeric(NA)
   for( i in unique(genes$locus) ){
@@ -215,7 +226,8 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   #   Format and return
   #-----------------------------------------------------------------------------
   
-  # Subset to interesting columns
+  # Subset columns, sort
+  message2("Subset columns, sort")
   bcols <- c( "locus", "locus_pos", "gene", "caldera", "n_genes", 
               "dist", "pops_glo", "coding_glo", "ensgid" )
   gcols <- c( "locus", "locus_pos", "gene", "caldera", "n_genes", 
