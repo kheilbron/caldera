@@ -87,6 +87,13 @@ caldera <- function( pops_file, cs_file, caldera_path ){
     stop( "CS file must contain columns: locus, chr, bp, pip" )
   }
   
+  # cs_file: missing data
+  idx <- !complete.cases( cs[ , c( "locus", "chr", "bp", "pip" ) ] )
+  if( sum(idx) > 0 ){
+    message2( "Removing ", sum(idx), " rows with missing data for locus, chr, bp, and/or pip" )
+    cs <- cs[ !idx , ]
+  }
+  
   # cs_file: report what kind of coding variant annotation will be used
   if( "c_gene" %in% names(cs) ){
     message2( "A c_gene column has been provided and will be used to",
@@ -134,7 +141,8 @@ caldera <- function( pops_file, cs_file, caldera_path ){
     sub$dist   <- ifelse( sub$dist_s < sub$dist_e, sub$dist_s, sub$dist_e)
     sub$dist[ loci$bp[i] > sub$START & loci$bp[i] < sub$END ] <- 0
     if( NROW(sub) > 0 ){
-      genes0[[i]] <- data.table( locus=loci$locus[i], locus_pos=loci$locus_pos[ loci$locus == i ], 
+      genes0[[i]] <- data.table( locus=loci$locus[i], 
+                                 locus_pos=loci$locus_pos[ loci$locus == loci$locus[i] ], 
                                  gene=sub$NAME, ensgid=sub$ENSGID, 
                                  n_genes=NROW(sub), dist=sub$dist )
     }
