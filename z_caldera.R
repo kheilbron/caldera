@@ -278,9 +278,9 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   
   # Subset columns, sort
   message2("Subset columns, sort")
-  bcols <- c( "locus", "locus_pos", "gene", "caldera", "n_genes", 
+  bcols <- c( "locus", "locus_pos", "gene", "caldera", "raw", "n_genes", 
               "dist", "pops_glo", "coding_glo", "ensgid" )
-  gcols <- c( "locus", "locus_pos", "gene", "caldera", "n_genes", 
+  gcols <- c( "locus", "locus_pos", "gene", "caldera", "multi", "n_genes", 
               "dist", "pops", "coding", "ensgid" )
   genes2 <- genes[ order( genes$locus, -genes$caldera ) , ..bcols ]
   names(genes2) <- gcols

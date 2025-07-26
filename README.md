@@ -41,6 +41,7 @@ The caldera() R function returns a data.table containing the following columns:
 | locus_pos     | A string containing the chromosome, left boundary, and right boundary of the locus (each separated by underscores) |
 | gene          | Gene name |
 | caldera       | CALDERA-predicted probability that this gene is causal for the GWAS trait |
+| multi         | As above, but without normalizing probabilities to sum to 100% in each locus |
 | n_genes       | Number of protein-coding genes in the locus |
 | dist          | Distance between the lead GWAS variant and any part of the gene (bp) |
 | pops          | PoPS score for the gene |
