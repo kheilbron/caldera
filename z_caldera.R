@@ -87,13 +87,6 @@ caldera <- function( pops_file, cs_file, caldera_path ){
     stop( "CS file must contain columns: locus, chr, bp, pip" )
   }
   
-  # cs_file: missing data
-  idx <- !complete.cases( cs[ , c( "locus", "chr", "bp", "pip" ) ] )
-  if( sum(idx) > 0 ){
-    message2( "Removing ", sum(idx), " rows with missing data for locus, chr, bp, and/or pip" )
-    cs <- cs[ !idx , ]
-  }
-  
   # cs_file: report what kind of coding variant annotation will be used
   if( "c_gene" %in% names(cs) ){
     message2( "A c_gene column has been provided and will be used to",
@@ -104,6 +97,55 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   }else{
     message2( "Chromosome and (assumed GRCh37) position will be used to determine",
               " genes affected by a list of ~76k UK Biobank coding variants")
+  }
+  
+  
+  #-----------------------------------------------------------------------------
+  #   If necessary, tidy up credible sets
+  #-----------------------------------------------------------------------------
+  
+  # Remove missing CS data
+  idx <- !complete.cases( cs[ , c( "locus", "chr", "bp", "pip" ) ] )
+  if( sum(idx) > 0 ){
+    message2( "Removing ", sum(idx), " rows with missing data for locus, chr, bp, and/or pip" )
+    cs <- cs[ !idx , ]
+  }
+  
+  # Sort by locus, then PIP
+  # Get cumulative PIP for each CS
+  # Flag CSs where cumulative PIP < 95%
+  # Flag extra variants that are not required to form a 95% CS
+  message2("Checking for credible set errors")
+  cs <- cs[ order( cs$locus, -cs$pip ) , ]
+  cs$total <- as.numeric(NA)
+  for( i in unique(cs$locus) ){
+  
+    # Subset, get cumulative PIP
+    sub  <- cs[ cs$locus == i , ]
+    sub$total <- cumsum(sub$pip)
+    
+    # Keep CSs with cumulative PIP < 95% as NA
+    if( max(sub$total) < 0.95 )  next
+    
+    # Set variants where cumulative PIP exceeds 95% as NA
+    last_good_idx <- min( which( sub$total > 0.95 ) )
+    bad_idx       <- seq_along(sub$total) > last_good_idx
+    sub$total[bad_idx] <- NA
+    
+    # Assign values: scaled
+    set( x     = cs, 
+         i     = which( cs$locus == i ), 
+         j     = "total", 
+         value = sub$total )
+  }
+  
+  # Remove flagged variants
+  idx <- is.na(cs$total)
+  if( sum(idx) > 0 ){
+    message2( "Removing ", sum(idx), " rows (", round( sum(idx) / NROW(cs) * 100, 1 ), 
+              "%) where 1) credible set cumulative PIP < 95% or ",
+              "2) more variants are provided than are necessary to form a 95% credible set" )
+    cs <- cs[ !idx , ]
   }
   
   
@@ -248,7 +290,6 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   #-----------------------------------------------------------------------------
   #   Done
   #-----------------------------------------------------------------------------
-  
 }
 
 
