@@ -16,7 +16,7 @@ message2 <- function(...) message(date(), "     ", ...)
 #   CALDERA
 #-------------------------------------------------------------------------------
 
-caldera <- function( pops_file, cs_file, caldera_path ){
+caldera <- function( pops_file, cs_file, assembly=37, caldera_path ){
   
   #-----------------------------------------------------------------------------
   #   Inputs
@@ -35,6 +35,7 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   #               a list of ~76k UK Biobank coding variants. If "rsid" is not
   #               provided, variants will be automatically annotated based on 
   #               chr and (GRCh37) bp.
+  # assembly:     Genome assembly. Must be either 37 or 38 (i.e. GRCh37 or GRCh38).
   # caldera_path: Path to local CALDERA GitHub repository.
   
   
@@ -58,7 +59,7 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   cod <- fread(coding_file)
   
   # Read in GENCODE genes
-  gene_file <- file.path( data_dir, "gene_locations.tsv" )
+  gene_file <- paste0( data_dir, "/gene_locations_gencode_v47_grch", assembly, "_all_protein_coding.tsv" )
   gen <- fread(gene_file)
   
   # Read in CALDERA model
@@ -95,8 +96,15 @@ caldera <- function( pops_file, cs_file, caldera_path ){
     message2( "An rsID column has been provided and will be used to determine",
               " genes affected by a list of ~76k UK Biobank coding variants")
   }else{
-    message2( "Chromosome and (assumed GRCh37) position will be used to determine",
-              " genes affected by a list of ~76k UK Biobank coding variants")
+    if( assembly == 37 ){
+      message2( "Chromosome and (assumed GRCh37) position will be used to determine",
+                " genes affected by a list of ~76k UK Biobank coding variants")
+    }else if( assembly == 38 ){
+      stop("'assembly' is '38', but the credible set file does not contain an ",
+           "'rsid' or a 'c_gene' column. Please provide one or the other." )
+    }else{
+      stop("'assembly' must be either '37' or '38'")
+    }
   }
   
   
@@ -147,6 +155,10 @@ caldera <- function( pops_file, cs_file, caldera_path ){
               "2) more variants are provided than are necessary to form a 95% credible set" )
     cs <- cs[ !idx , ]
   }
+  
+  # If necessary, remove "chr" from the start of chromosome and convert to integer
+  cs$chr <- sub( pattern="^chr", replacement="", x=cs$chr, ignore.case=TRUE ) %>%
+    as.integer()
   
   
   #-----------------------------------------------------------------------------
@@ -204,7 +216,8 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   # Decorate genes with their POPS scores
   message2("Decorate genes with their POPS scores")
   genes$pops_glo <- pop$PoPS_Score[ match( genes$ensgid, pop$ENSGID ) ]
-  genes$pops_glo[ is.na(genes$pops_glo) ] <- 0
+  genes$impute_pops <- is.na(genes$pops_glo)
+  genes$pops_glo[ genes$impute_pops ] <- 0
   
   # If not already done, annotate coding CS variants
   if( !( "c_gene" %in% names(cs) ) ){
@@ -279,9 +292,9 @@ caldera <- function( pops_file, cs_file, caldera_path ){
   # Subset columns, sort
   message2("Subset columns, sort")
   bcols <- c( "locus", "locus_pos", "gene", "caldera", "raw", "n_genes", 
-              "dist", "pops_glo", "coding_glo", "ensgid" )
+              "dist", "pops_glo", "coding_glo", "impute_pops", "ensgid" )
   gcols <- c( "locus", "locus_pos", "gene", "caldera", "multi", "n_genes", 
-              "dist", "pops", "coding", "ensgid" )
+              "dist", "pops", "coding", "impute_pops", "ensgid" )
   genes2 <- genes[ order( genes$locus, -genes$caldera ) , ..bcols ]
   names(genes2) <- gcols
   return(genes2)
