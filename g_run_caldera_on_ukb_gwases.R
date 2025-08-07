@@ -64,12 +64,12 @@ out <- do.call( rbind, out )
 td1 <- fread("~/projects/causal_genes/weeks2023_table_s1.csv")
 names(td1) <- tolower( names(td1) )
 td2 <- td1 %>% select( trait, description ) %>%
-  distinct( )
+  distinct( trait, description, .keep_all=TRUE )
 out2 <- left_join( x=out, y=td2, by="trait" )
 
 # Write output to file
-outfile <- file.path( maindir, "run_caldera_on_all_traits/caldera_results_93_ukb_traits.tsv.gz" )
-fwrite( x=out, file=outfile, sep="\t" )
+outfile <- file.path( maindir, "run_caldera_on_all_traits/caldera_results_93_ukb_traits.tsv" )
+fwrite( x=out2, file=outfile, sep="\t" )
 
 
 
