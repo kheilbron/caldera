@@ -4,19 +4,24 @@
 #   Read in data
 #-------------------------------------------------------------------------------
 
+# Load libraries
+library(data.table)
+library(tidyverse)
+library(readxl)
+
 # Read in gencode gene boundaries
 gencode <- fread("~/projects/causal_genes/gene_locations.tsv")
 
 # Read in the data, merge
-gw_file <- "~/projects/causal_genes/mostafavi2023_gene_annots/gwas_hits.csv"
-gw <- fread(gw_file)
+mo_file <- file.path( "~/projects/causal_genes/mostafavi2023_gene_annots",
+                      "mostafavi2023_supplementary_tables.xlsx" )
+gw <- read_excel( path=mo_file, sheet=3 )
 pattern <- "^([[:digit:]]+):([[:digit:]]+):.*$"
 gw$chr <- as.integer( sub( pattern=pattern, replacement="\\1", x=gw$Variant ) )
 gw$bp  <- as.integer( sub( pattern=pattern, replacement="\\2", x=gw$Variant ) )
 
 # Read in the data, merge
-eq_file <- "~/projects/causal_genes/mostafavi2023_gene_annots/eqtl_hits.csv"
-eq0 <- fread(eq_file)
+eq0 <- read_excel( path=mo_file, sheet=4 )
 eq <- eq0[ eq0$eGene_Symbol %in% gencode$ENSGID , ]
 eq$chr <- as.integer( sub( pattern=pattern, replacement="\\1", x=eq$Variant ) )
 eq$bp  <- as.integer( sub( pattern=pattern, replacement="\\2", x=eq$Variant ) )
@@ -111,7 +116,7 @@ row.names(df) <- c( "0-100kb", "100-200kb", "200-300kb",
 # Plot
 maindir     <- "~/projects/causal_genes/"
 fig_dir     <- file.path( maindir, "figures" )
-fig_s4_file <- file.path( fig_dir, "figure_s4.jpg" )
+fig_s4_file <- file.path( fig_dir, "FigS5.jpg" )
 jpeg( filename=fig_s4_file, width=600*4, height=300*4, res=75*4 )
 par( mfrow=c(1,2) )
 par( mar=c(6,5,1,1) )
