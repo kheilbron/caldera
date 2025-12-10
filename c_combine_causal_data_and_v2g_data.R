@@ -117,9 +117,10 @@ m$twas_p     <- ifelse( m$twas_p == 0, .Machine$double.xmin, m$twas_p )
 m$twas_glo   <- ifelse( is.na(m$twas_z), 0, abs(m$twas_z) )
 
 # E-P correlation
-m$corr_liu_raw_l2g <- ifelse( is.na(m$corr_liu_score), 
-                              min( m$corr_liu_score, na.rm=TRUE ), 
-                              m$corr_liu_score )
+# m$corr_liu_raw_l2g <- ifelse( is.na(m$corr_liu_score) | m$corr_liu_score == 0, 
+#                               min( m$corr_liu_score[ m$corr_liu_score > 0 ], na.rm=TRUE ), 
+#                               m$corr_liu_score )
+# m$corr_liu_glo  <- log10(m$corr_liu_raw_l2g)
 m$corr_liu_glo  <- ifelse( is.na(m$corr_liu_score), 0, m$corr_liu_score )
 m$corr_and_glo  <- ifelse( is.na(m$corr_andersson_score), 0, m$corr_andersson_score )
 m$corr_uli_glo  <- ifelse( is.na(m$corr_ulirsch_score), 0, m$corr_ulirsch_score )
@@ -129,11 +130,17 @@ m$pchic_jung_glo <- ifelse( is.na(m$pchic_jung_score), 0, m$pchic_jung_score )
 m$pchic_jav_glo  <- ifelse( is.na(m$pchic_javierre_score), 0, m$pchic_javierre_score )
 
 # CLPP
-m$clpp_raw_l2g <- ifelse( is.na(m$clpp_prob), 0, m$clpp_prob )
+# m$clpp_raw_l2g <- ifelse( is.na(m$clpp_prob) | m$clpp_prob == 0, 
+#                           min( m$clpp_prob[ m$clpp_prob > 0 ], na.rm=TRUE ), 
+#                           m$clpp_prob )
+# m$clpp_glo     <- log10(m$clpp_raw_l2g)
 m$clpp_glo     <- ifelse( is.na(m$clpp_prob), 0, m$clpp_prob )
 
 # ABC
-m$abc_raw_l2g <- ifelse( is.na(m$abc_score), 0, m$abc_score )
+# m$abc_raw_l2g <- ifelse( is.na(m$abc_score) | m$abc_score == 0, 
+#                           min( m$abc_score[ m$abc_score > 0 ], na.rm=TRUE ), 
+#                           m$abc_score )
+# m$abc_glo     <- log10(m$abc_raw_l2g)
 m$abc_glo     <- ifelse( is.na(m$abc_score), 0, m$abc_score )
 
 # MAGMA

@@ -116,8 +116,8 @@ row.names(df) <- c( "0-100kb", "100-200kb", "200-300kb",
 # Plot
 maindir     <- "~/projects/causal_genes/"
 fig_dir     <- file.path( maindir, "figures" )
-fig_s4_file <- file.path( fig_dir, "FigS5.jpg" )
-jpeg( filename=fig_s4_file, width=600*4, height=300*4, res=75*4 )
+fig_s5_file <- file.path( fig_dir, "FigS5.tif" )
+tiff( filename=fig_s5_file, width=600*4, height=300*4, res=75*4 )
 par( mfrow=c(1,2) )
 par( mar=c(6,5,1,1) )
 bp1 <- barplot( as.matrix(df), beside=TRUE, las=1, ylab="Proportion of genes",

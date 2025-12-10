@@ -82,8 +82,8 @@ idx <- !is.na(vg$coding_prob) & vg$coding_prob > 0.5
 tgp_c0 <- vg[ idx , ]
 tcp_c_all <- unique(tgp_c0$tcp)
 
-# Subset to coding TGPs that 1) use canonical ENSGIDs, 2) have cs_id <= 5
-# (5th strongest CS in the region or better), and removing duplicated TGPs
+# Subset to coding TGPs that 1) use canonical ENSGIDs, 2) have cs_id <= 6
+# (6th strongest CS in the region or better), and removing duplicated TGPs
 # (preferentially retaining low cs_id)
 tgp_c0 <- tgp_c0[ order( tgp_c0$trait, tgp_c0$region, tgp_c0$cs_id ) , ]
 tgp_c  <- tgp_c0[ tgp_c0$ensgid %in% gencode$ENSGID & 
