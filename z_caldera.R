@@ -64,12 +64,12 @@ caldera <- function( pops_file, cs_file, assembly=37, caldera_path ){
   
   # Read in CALDERA model
   mod_dir  <- file.path( caldera_path, "trained_models" )
-  cal_file <- file.path( mod_dir, "caldera_model.rds" )
+  cal_file <- file.path( mod_dir, "caldera_model_no_covs.rds" )
   cal_mod  <- readRDS(cal_file)
   
   # Read in covariate means
-  cov_file <- file.path( mod_dir, "cov_means.rds" )
-  cov_means  <- readRDS(cov_file)
+  # cov_file <- file.path( mod_dir, "cov_means.rds" )
+  # cov_means  <- readRDS(cov_file)
   
   
   #-----------------------------------------------------------------------------
@@ -178,9 +178,9 @@ caldera <- function( pops_file, cs_file, assembly=37, caldera_path ){
     bp_max <- max(sub$bp) + window
     id     <- paste0( chr, "_", bp_min, "_", bp_max )
     loci0[[i]] <- data.table( locus=i, locus_pos=id, chr=chr, bp=bp,
-                             bp_min=bp_min, bp_max=bp_max )
+                              bp_min=bp_min, bp_max=bp_max )
   }
-  loci <- do.call( rbind, loci0 )
+  loci <- do.call( rbind, loci0 ) %>% arrange( chr, bp )
   message2( "The dataset contains ", NROW(loci), " loci" )
   
   # Find all genes in each GWAS locus and their distance to the GWAS hit
@@ -257,10 +257,10 @@ caldera <- function( pops_file, cs_file, assembly=37, caldera_path ){
   #   Add covariates
   #-----------------------------------------------------------------------------
   
-  message2("Add covariates")
-  for( i in names(cov_means) ){
-    genes[[i]] <- cov_means[i]
-  }
+  # message2("Add covariates")
+  # for( i in names(cov_means) ){
+  #   genes[[i]] <- cov_means[i]
+  # }
   
   
   #-----------------------------------------------------------------------------

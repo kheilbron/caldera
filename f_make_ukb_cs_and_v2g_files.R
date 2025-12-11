@@ -27,10 +27,10 @@ cs_colnames <- fread( file.path( maindir, "release1.1", "UKBB_94traits_release1.
 cs <- fread( file.path( maindir, "release1.1", "UKBB_94traits_release1.bed.gz" ) )
 names(cs) <- cs_colnames$V1
 
-# Remove SNPs that are not in CSs, or are in CSs with the 6th+ worst ABF
+# Remove SNPs that are not in CSs, or are in CSs with the 5th+ worst ABF
 # Subset to SUSIE CSs only
 # Add P value and TCP columns
-n_css <- 6
+n_css <- 5
 cs2 <- cs[  cs$cs_id > 0 & 
               cs$cs_id <= n_css , ]
 cs3 <- cs2[ cs2$method == "SUSIE" , ]

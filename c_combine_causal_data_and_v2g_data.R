@@ -56,8 +56,9 @@ suppressPackageStartupMessages( library(dplyr) )
 gencode  <- fread("~/projects/causal_genes/gene_locations.tsv")
 
 # Read in causal/non-causal trait-gene pairs
-cnc_file <- file.path( maindir, "causal_noncausal_trait_gene_pairs", 
-                       "causal_noncausal_trait_gene_pairs_300kb.tsv" )
+window_kb <- 300
+cnc_name <- paste0( "causal_noncausal_trait_gene_pairs_", window_kb, "kb.tsv" )
+cnc_file <- file.path( maindir, "causal_noncausal_trait_gene_pairs", cnc_name )
 cnc <- fread(cnc_file)
 
 # Read in V2G
@@ -325,8 +326,9 @@ m2$TF[ m2$pritchard_miss == 1 ] <- min( m2$TF, na.rm=TRUE )
 #-------------------------------------------------------------------------------
 
 # Write
+merged_outname <- paste0( "causal_tgp_and_gene_mapping_data_", window_kb, "kb.tsv" )
 merged_outfile <- file.path( maindir, "causal_noncausal_trait_gene_pairs", 
-                             "causal_tgp_and_gene_mapping_data_300kb.tsv" )
+                             merged_outname )
 fwrite( x=m2, file=merged_outfile, sep="\t" )
 
 

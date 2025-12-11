@@ -71,6 +71,10 @@ out2 <- left_join( x=out, y=td2, by="trait" )
 outfile <- file.path( maindir, "run_caldera_on_all_traits/caldera_results_93_ukb_traits.tsv" )
 fwrite( x=out2, file=outfile, sep="\t" )
 
+# Numbers reported in the paper
+NROW(cs3) #number of variants
+cs3$tcp %>% unique() %>% length() #number of credible sets
+out2 %>% filter( caldera > 0.5 ) %>% NROW() #number of genes with CALDERA > 50%
 
 
 
