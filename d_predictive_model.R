@@ -1703,10 +1703,10 @@ saveRDS( object=b_glm_tmt, file=file.path( maindir, "models", "caldera_model_no_
 fl_xgb_pr        <- plot_loto_pr( loto_obj=fl_xgb,   color=viridis(11), legend=TRUE )
 fl_glm_pr        <- plot_loto_pr( loto_obj=fl_glm,   color=viridis(11), legend=TRUE )
 bl_glm_pr        <- plot_loto_pr( loto_obj=bl_glm,   color=viridis(11), legend=TRUE )
-fgl_glm_pr       <- plot_loto_pr( loto_obj=fgl_glm,  color=viridis(11), legend=TRUE )
-bgl_glm_pr       <- plot_loto_pr( loto_obj=bgl_glm,  color=viridis(11), legend=TRUE )
-bgl_glm_sca_pr   <- plot_loto_pr( loto_obj=bgl_glm,  color=viridis(11), legend=TRUE,
-                                  type="scaled")
+# fgl_glm_pr       <- plot_loto_pr( loto_obj=fgl_glm,  color=viridis(11), legend=TRUE )
+# bgl_glm_pr       <- plot_loto_pr( loto_obj=bgl_glm,  color=viridis(11), legend=TRUE )
+# bgl_glm_sca_pr   <- plot_loto_pr( loto_obj=bgl_glm,  color=viridis(11), legend=TRUE,
+#                                   type="scaled")
 bl_glm_sca_pr    <- plot_loto_pr( loto_obj=bl_glm,   color=viridis(11), legend=TRUE,
                                   type="scaled")
 bl_glm_sca_pr
@@ -1818,6 +1818,47 @@ two_sample_z_test( mean1 = ma$effect[1],
                    mean2 = ma$effect[5], 
                    se1   = ma$se[1], 
                    se2   = ma$se[5] )
+
+# Mega-analysis
+mg_cols <- c( "causal", "CALDERA", "FLAMES", "L2G", "cS2G" )
+mega <- rbind( lg_pr$data |> select( all_of(mg_cols) ),
+               ex_pr$data |> select( all_of(mg_cols) ),
+               mt_pr$data |> select( all_of(mg_cols) ) )
+methods <- c( "cS2G", "L2G", "FLAMES", "CALDERA" )
+mega_pr <- plot_mod_pr( pred_col=methods, data=mega )
+mega_pr <- mega_pr[ rev( seq_along(mega_pr$lo) ) , ]
+
+# Two-sample t-tests: CALDERA vs. FLAMES
+two_sample_z_test( mean1 = mega_pr$auprc_logit[1], 
+                   mean2 = mega_pr$auprc_logit[2], 
+                   se1   = mega_pr$se_logit[1], 
+                   se2   = mega_pr$se_logit[2] )
+
+# Two-sample t-tests: CALDERA vs. L2G
+two_sample_z_test( mean1 = mega_pr$auprc_logit[1], 
+                   mean2 = mega_pr$auprc_logit[3], 
+                   se1   = mega_pr$se_logit[1], 
+                   se2   = mega_pr$se_logit[3] )
+
+# Two-sample t-tests: CALDERA vs. cS2G
+two_sample_z_test( mean1 = mega_pr$auprc_logit[1], 
+                   mean2 = mega_pr$auprc_logit[4], 
+                   se1   = mega_pr$se_logit[1], 
+                   se2   = mega_pr$se_logit[4]*1.09 )
+
+# Compare CALDERA and CALDERA_m
+mg_cols2 <- c( "causal", "CALDERA", "CALDERA_m" )
+mega2 <- rbind( lg_pr$data |> select( all_of(mg_cols2) ),
+                ex_pr$data |> select( all_of(mg_cols2) ),
+                mt_pr$data |> select( all_of(mg_cols2) ) )
+methods2 <- c( "CALDERA", "CALDERA_m" )
+mega_pr2 <- plot_mod_pr( pred_col=methods2, data=mega2, make_plot=FALSE )
+
+# Two-sample t-tests: CALDERA vs. CALDERA_m
+two_sample_z_test( mean1 = mega_pr2$auprc_logit[1], 
+                   mean2 = mega_pr2$auprc_logit[2], 
+                   se1   = mega_pr2$se_logit[1], 
+                   se2   = mega_pr2$se_logit[2] )
 
 
 #-------------------------------------------------------------------------------
@@ -1957,7 +1998,7 @@ plot_logOR_relationship_model( data=tr, model=b_glm,
                                g_trans_fun=function(x) 1 / logistic10(x))
 dev.off()
 
-# Number of genes
+# CALDERA score distribution for causal and non-causal genes
 df1 <- data.frame( x=bl_glm$preds$scaled[  bl_glm$preds$causal ] )
 df2 <- data.frame( x=bl_glm$preds$scaled[ !bl_glm$preds$causal ] )
 p1 <- ggplot( df1, aes(x=x) ) +
@@ -2259,18 +2300,30 @@ brier_fun( true = lg_pr$data$causal,
            pred = lg_pr$data$CALDERA )
 brier_fun( true = lg_pr$data$causal,
            pred = lg_pr$data$L2G )
+brier_fun( true = lg_pr$data$causal,
+           pred = lg_pr$data$FLAMES )
+brier_fun( true = lg_pr$data$causal,
+           pred = lg_pr$data$cS2G )
 
 # ExWAS
 brier_fun( true = ex_pr$data$causal,
            pred = ex_pr$data$CALDERA )
 brier_fun( true = ex_pr$data$causal,
            pred = ex_pr$data$L2G )
+brier_fun( true = ex_pr$data$causal,
+           pred = ex_pr$data$FLAMES )
+brier_fun( true = ex_pr$data$causal,
+           pred = ex_pr$data$cS2G )
 
 # MT
 brier_fun( true = mt_pr$data$causal,
            pred = mt_pr$data$CALDERA )
 brier_fun( true = mt_pr$data$causal,
            pred = mt_pr$data$L2G )
+brier_fun( true = mt_pr$data$causal,
+           pred = mt_pr$data$FLAMES )
+brier_fun( true = mt_pr$data$causal,
+           pred = mt_pr$data$cS2G )
 
 
 #-------------------------------------------------------------------------------
