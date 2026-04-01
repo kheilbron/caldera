@@ -56,8 +56,9 @@ suppressPackageStartupMessages( library(dplyr) )
 gencode  <- fread("~/projects/causal_genes/gene_locations.tsv")
 
 # Read in causal/non-causal trait-gene pairs
-cnc_file <- file.path( maindir, "causal_noncausal_trait_gene_pairs", 
-                       "causal_noncausal_trait_gene_pairs_300kb.tsv" )
+window_kb <- 300
+cnc_name <- paste0( "causal_noncausal_trait_gene_pairs_", window_kb, "kb.tsv" )
+cnc_file <- file.path( maindir, "causal_noncausal_trait_gene_pairs", cnc_name )
 cnc <- fread(cnc_file)
 
 # Read in V2G
@@ -83,6 +84,7 @@ gcols_cnc <- c( "causal", "trait", "gene", "ensgid", "region", "cs_id",
                 "n_cs_snps", "cs_width", "ngenes_nearby", "ensgid_c" )
 m <- left_join( x=cnc[ , ..gcols_cnc ],
                 y=vg[  , ..gcols_vg  ], by=c( "trait", "ensgid", "cs_id" ) )
+m <- m[ !is.na(m$chromosome) , ]
 
 
 #-------------------------------------------------------------------------------
@@ -90,7 +92,9 @@ m <- left_join( x=cnc[ , ..gcols_cnc ],
 #-------------------------------------------------------------------------------
 
 # n_genes
-m$prior_n_genes_locus <- logit10( 1/m$ngenes_nearby )
+m$prior_n_genes_locus <- ifelse( m$ngenes_nearby == 1,
+                                 logit10( 0.75 ),
+                                 logit10( 1/m$ngenes_nearby ) )
 tcp_m <- paste( m$trait, m$region, m$cs_id, sep="_" )
 
 # POPS
@@ -109,14 +113,16 @@ m$dist_tss_glo <- ifelse( is.na(m$distance_tss),
                           -log10( m$distance_tss + 1e3 ))
 
 # TWAS
-m$twas_p   <- ifelse( m$twas_p == 0, .Machine$double.xmin, m$twas_p )
-m$twas_glo <- ifelse( is.na(m$twas_z), 0, abs(m$twas_z) )
+m$twas_abs_z <- abs(m$twas_z)
+m$twas_p     <- ifelse( m$twas_p == 0, .Machine$double.xmin, m$twas_p )
+m$twas_glo   <- ifelse( is.na(m$twas_z), 0, abs(m$twas_z) )
 
 # E-P correlation
-m$corr_liu_raw_l2g <- ifelse( is.na(m$corr_liu_score), 
-                              min( m$corr_liu_score, na.rm=TRUE ), 
-                              m$corr_liu_score )
-m$corr_liu_glo  <- log10(m$corr_liu_raw_l2g)
+# m$corr_liu_raw_l2g <- ifelse( is.na(m$corr_liu_score) | m$corr_liu_score == 0, 
+#                               min( m$corr_liu_score[ m$corr_liu_score > 0 ], na.rm=TRUE ), 
+#                               m$corr_liu_score )
+# m$corr_liu_glo  <- log10(m$corr_liu_raw_l2g)
+m$corr_liu_glo  <- ifelse( is.na(m$corr_liu_score), 0, m$corr_liu_score )
 m$corr_and_glo  <- ifelse( is.na(m$corr_andersson_score), 0, m$corr_andersson_score )
 m$corr_uli_glo  <- ifelse( is.na(m$corr_ulirsch_score), 0, m$corr_ulirsch_score )
 
@@ -125,16 +131,18 @@ m$pchic_jung_glo <- ifelse( is.na(m$pchic_jung_score), 0, m$pchic_jung_score )
 m$pchic_jav_glo  <- ifelse( is.na(m$pchic_javierre_score), 0, m$pchic_javierre_score )
 
 # CLPP
-m$clpp_raw_l2g <- ifelse( is.na(m$clpp_prob), 0, m$clpp_prob )
-m$clpp_glo     <- ifelse( is.na(m$clpp_prob), 
-                          log10( min( m$clpp_prob, na.rm=TRUE ) ), 
-                          log10(m$clpp_prob) )
+# m$clpp_raw_l2g <- ifelse( is.na(m$clpp_prob) | m$clpp_prob == 0, 
+#                           min( m$clpp_prob[ m$clpp_prob > 0 ], na.rm=TRUE ), 
+#                           m$clpp_prob )
+# m$clpp_glo     <- log10(m$clpp_raw_l2g)
+m$clpp_glo     <- ifelse( is.na(m$clpp_prob), 0, m$clpp_prob )
 
 # ABC
-m$abc_raw_l2g <- ifelse( is.na(m$abc_score), 0, m$abc_score )
-m$abc_glo  <- ifelse( is.na(m$abc_score) | m$abc_score == 0, 
-                      log10( min( m$abc_score[ m$abc_score > 0 ], na.rm=TRUE ) ), 
-                      log10(m$abc_score) )
+# m$abc_raw_l2g <- ifelse( is.na(m$abc_score) | m$abc_score == 0, 
+#                           min( m$abc_score[ m$abc_score > 0 ], na.rm=TRUE ), 
+#                           m$abc_score )
+# m$abc_glo     <- log10(m$abc_raw_l2g)
+m$abc_glo     <- ifelse( is.na(m$abc_score), 0, m$abc_score )
 
 # MAGMA
 m$magma_glo <- ifelse( is.na(m$magma_score), 
@@ -142,9 +150,10 @@ m$magma_glo <- ifelse( is.na(m$magma_score),
                        m$magma_score )
 
 # SMR
+m$smr_z <- p_to_z(m$smr_p)
 m$smr_glo <- ifelse( is.na(m$smr_p),
-                     -log10( max( m$smr_p, na.rm=TRUE ) ), 
-                     -log10(m$smr_p) )
+                     p_to_z(1), 
+                     p_to_z(m$smr_p) )
 
 # Coding
 # m$coding_glo <- ifelse( is.na(m$coding_prob),
@@ -154,8 +163,10 @@ m$coding_glo <- ifelse( is.na(m$coding_prob), 0, m$coding_prob )
 m$coding     <- ifelse( is.na(m$coding_prob), 0, 1 )
 
 # DEPICT
-m$depict_z_glo <- p_to_z(m$no_loco_nc_depict_p)
-m$depict_z_glo[ is.na(m$depict_z_glo) ] <- 0
+m$depict_z <- p_to_z(m$no_loco_nc_depict_p)
+m$depict_z_glo <- ifelse( is.na(m$no_loco_nc_depict_p),
+                          p_to_z(1),
+                          p_to_z(m$no_loco_nc_depict_p) )
 
 # NetWAS
 m$netwas_score_glo     <- m$no_loco_nc_netwas_score
@@ -240,9 +251,10 @@ m2 <- left_join( x=m, y=mo, by="ensgid" )
 
 # Missingness
 m2$pritchard_miss <- ifelse( is.na(m2$length), 1, 0 )
+m2 <- m2[ m2$pritchard_miss == 0 , ]
 
 # pLI
-m2$pLI[ is.na(m2$pLI) ] <- 0.5
+m2$pLI[ is.na(m2$pLI) ] <- mean( m2$pLI, na.rm=TRUE )
 m2$pLI_lt_0.9 <- ifelse( m2$pLI < 0.9, 1, 0 )
 m2$pLI_lt_0.1 <- ifelse( m2$pLI < 0.1, 1, 0 )
 m2$pLI_log10 <- -log10(m2$pLI)
@@ -314,8 +326,9 @@ m2$TF[ m2$pritchard_miss == 1 ] <- min( m2$TF, na.rm=TRUE )
 #-------------------------------------------------------------------------------
 
 # Write
+merged_outname <- paste0( "causal_tgp_and_gene_mapping_data_", window_kb, "kb.tsv" )
 merged_outfile <- file.path( maindir, "causal_noncausal_trait_gene_pairs", 
-                             "causal_tgp_and_gene_mapping_data_300kb.tsv" )
+                             merged_outname )
 fwrite( x=m2, file=merged_outfile, sep="\t" )
 
 

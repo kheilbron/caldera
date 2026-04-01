@@ -36,7 +36,10 @@ z_to_p <- function( z, log.p=FALSE ){
 # Remove SNPs that are not in CSs, or are in CSs with the 6th+ worst ABF
 # Subset to SUSIE CSs only
 # Add P value and TCP columns
-cs2 <- cs[  cs$cs_id > 0 & cs$cs_id < 6 & cs$trait %in% it , ]
+n_css <- 5
+cs2 <- cs[  cs$cs_id > 0 & 
+              cs$cs_id <= n_css &
+              cs$trait %in% it , ]
 cs3 <- cs2[ cs2$method == "SUSIE" , ]
 cs3$p <- z_to_p( z=sqrt(cs3$chisq_marginal) )
 cs3$tcp <- paste( cs3$trait, cs3$region, cs3$cs_id, sep="_" )
@@ -79,12 +82,12 @@ idx <- !is.na(vg$coding_prob) & vg$coding_prob > 0.5
 tgp_c0 <- vg[ idx , ]
 tcp_c_all <- unique(tgp_c0$tcp)
 
-# Subset to coding TGPs that 1) use canonical ENSGIDs, 2) have cs_id <= 5
-# (5th strongest CS in the region or better), and removing duplicated TGPs
+# Subset to coding TGPs that 1) use canonical ENSGIDs, 2) have cs_id <= 6
+# (6th strongest CS in the region or better), and removing duplicated TGPs
 # (preferentially retaining low cs_id)
 tgp_c0 <- tgp_c0[ order( tgp_c0$trait, tgp_c0$region, tgp_c0$cs_id ) , ]
 tgp_c  <- tgp_c0[ tgp_c0$ensgid %in% gencode$ENSGID & 
-                  tgp_c0$cs_id <= 5 & 
+                  tgp_c0$cs_id <= n_css &
                   !duplicated( tgp_c0[ , c( "trait", "ensgid" ) ] ) , ]
 tcp_c <- unique(tgp_c$tcp)
 NROW(tgp_c0); NROW(tgp_c); length(tcp_c)
@@ -144,14 +147,14 @@ for( i in seq_along(tcp_n2) ){
   }
 }
 tcp_n_near0 <- do.call( rbind, tcp_n_near0 )
+tcp_n_near  <- tcp_n_near0
 
 # If a coding TCP is associated with multiple non-coding TCPs, only keep the best cs_id (ABF)
-# tcp_n_near0 <- tcp_n_near0[ order( tcp_n_near0$trait, 
-#                                    tcp_n_near0$region, 
-#                                    tcp_n_near0$cs_id ) , ]
-# tcp_n_near  <- tcp_n_near0[ !duplicated(tcp_n_near0$tcp_c) , ]
-# NROW(tcp_n_near0); NROW(tcp_n_near)
-tcp_n_near <- tcp_n_near0
+tcp_n_near0 <- tcp_n_near0[ order( tcp_n_near0$trait,
+                                   tcp_n_near0$region,
+                                   tcp_n_near0$cs_id ) , ]
+tcp_n_near  <- tcp_n_near0[ !duplicated(tcp_n_near0$tcp_c) , ]
+NROW(tcp_n_near0); NROW(tcp_n_near)
 
 # Extract full CS data for non-coding TCPs near coding TGPs
 cs_n_near  <- cs3[ cs3$tcp %in% tcp_n_near$tcp , ]
@@ -203,20 +206,52 @@ table(cnc$causal)
 table( duplicated( cnc[ cnc$causal  , c( "trait", "ensgid" ) ] ) )
 table( duplicated( cnc[ !cnc$causal , c( "trait", "ensgid" ) ] ) )
 
-# Remove loci with < 2 genes in them
-cnc2 <- cnc[ cnc$ngenes_nearby >= 2 , ]
 
-# Remove traits with <5 causal genes
-n_causal_per_trait <- sort( table( cnc2$trait[ cnc2$causal ] ), decreasing=TRUE )
-ge_5_causal_per_trait <- names(n_causal_per_trait)[ n_causal_per_trait >= 5 ]
-cnc3 <- cnc2[ cnc2$trait %in% ge_5_causal_per_trait , ]
-table(cnc$causal); table(cnc2$causal); table(cnc3$causal)
+#-------------------------------------------------------------------------------
+#   If a gene is causal for multiple traits, remove TCPs for the largest traits
+#-------------------------------------------------------------------------------
+
+# Find duplicated causal genes
+cg <- cnc$gene[cnc$causal]
+dup_cg <- cg[ duplicated(cg) ] %>% unique() %>% sort()
+
+# For each duplicated causal gene, flag largest TCPs for removal
+n_causal_per_trait <- sort( table( cnc$trait[ cnc$causal ] ), decreasing=TRUE )
+bad_tcps0 <- list()
+for( i in dup_cg ){
+  
+  # Find all traits for which this gene is causal
+  traits <- cnc %>% filter(causal) %>% filter( gene == i ) %>% pull(trait)
+  
+  # Ignore the smallest trait
+  ncpt  <- n_causal_per_trait[traits] %>% sort( decreasing=TRUE )
+  big_traits <- head( ncpt, length(ncpt) - 1 ) %>% names()
+  
+  # For the remainder, store bad TCPs
+  bad_tcps0[[i]] <- cnc %>% 
+    filter( causal,
+            gene == i,
+            trait %in% big_traits ) %>% 
+    pull(tcp)
+}
+bad_tcps <- unlist(bad_tcps0) %>% unname()
+
+# Remove bad TCPs
+cnc2 <- cnc %>%
+  filter( !( tcp %in% bad_tcps ) )
+table(cnc$causal); table(cnc2$causal)
+
+
+#-------------------------------------------------------------------------------
+#   Return
+#-------------------------------------------------------------------------------
 
 # Write causal/non-causal trait-gene pairs to file
 outdir <- file.path( maindir, "causal_noncausal_trait_gene_pairs" )
 dir.create( path=outdir, showWarnings=FALSE )
-causal_gene_file <- file.path( outdir, "causal_noncausal_trait_gene_pairs_300kb.tsv" )
-fwrite( x=cnc3, file=causal_gene_file, sep="\t" )
+outname <- paste0( "causal_noncausal_trait_gene_pairs_", window/1e3, "kb.tsv" )
+causal_gene_file <- file.path( outdir, outname )
+fwrite( x=cnc2, file=causal_gene_file, sep="\t" )
 
 
 #-------------------------------------------------------------------------------
